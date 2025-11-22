@@ -102,6 +102,60 @@ class ForexDatabase:
         ''')
         
         conn.commit()
+        
+        # Таблица для результатов бэктестинга
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                start_date DATETIME NOT NULL,
+                end_date DATETIME NOT NULL,
+                total_trades INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                profit_factor REAL NOT NULL,
+                max_drawdown REAL NOT NULL,
+                total_return REAL NOT NULL
+            )
+        ''')
+        
+        # Таблица для отслеживания сигналов AI
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                signal_type TEXT NOT NULL, -- 'chatai' или 'aitrader'
+                direction TEXT NOT NULL,
+                entry_price REAL,
+                stop_loss REAL,
+                take_profit REAL,
+                ai_score REAL,
+                ai_probability REAL,
+                ai_confidence REAL,
+                expected_value REAL,
+                recommendation TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                result TEXT, -- 'win', 'loss', 'pending'
+                result_price REAL,
+                result_date DATETIME
+            )
+        ''')
+        
+        # Таблица для производительности AI
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_type TEXT NOT NULL,
+                accuracy REAL NOT NULL,
+                total_signals INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                avg_return REAL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
         conn.close()
     
     async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,7 +183,7 @@ class ForexDatabase:
                     "• Проверка на дивергенции\n"
                     "• Оценка волатильности и объема\n"
                     "• Паттерн-распознавание\n\n"
-                    "*Целевая точность: 92%+"*
+                    "*Целевая точность: 92%+"
                 )
                 await update.message.reply_text(help_text, parse_mode='Markdown')
                 return
@@ -402,65 +456,55 @@ class ForexDatabase:
             )
     
     def get_quotes(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
-                indicators TEXT NOT NULL,
-                news_sentiment REAL
-            )
-        ''')
-        
-        # Таблица для хранения результатов бэктестинга
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pair TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                start_date DATETIME NOT NULL,
-                end_date DATETIME NOT NULL,
-                total_trades INTEGER NOT NULL,
-                win_rate REAL NOT NULL,
-                profit_factor REAL NOT NULL,
-                max_drawdown REAL NOT NULL,
-                total_return REAL NOT NULL
-            )
-        ''')
-        
-        # Таблица для отслеживания сигналов AI
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pair TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                signal_type TEXT NOT NULL, -- 'chatai' или 'aitrader'
-                direction TEXT NOT NULL,
-                entry_price REAL,
-                stop_loss REAL,
-                take_profit REAL,
-                ai_score REAL,
-                ai_probability REAL,
-                ai_confidence REAL,
-                expected_value REAL,
-                recommendation TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                result TEXT, -- 'win', 'loss', 'pending'
-                result_price REAL,
-                result_date DATETIME
-            )
-        ''')
-        
-        # Таблица для производительности AI
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_performance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_type TEXT NOT NULL,
-                accuracy REAL NOT NULL,
-                total_signals INTEGER NOT NULL,
-                win_rate REAL NOT NULL,
-                avg_return REAL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
+        """Получение котировок с кэшированием"""
+        try:
+            key = (pair, timeframe)
+            now = datetime.utcnow()
+            ttl_map = {'1m': 30, '5m': 120, '15m': 300, '1h': 600, '4h': 1800, '1d': 43200}
+            ttl = ttl_map.get(timeframe, 300)
+            cached = self.quotes_cache.get(key)
+            if cached and (now - cached['time']).total_seconds() < ttl and cached['quotes']:
+                return cached['quotes'][-limit:]
+            yahoo_pair = self.pair_to_yahoo_format(pair)
+            period_map = {
+                '1m': f"{max(1, limit//60)}d",
+                '5m': f"{max(1, limit//12)}d",
+                '15m': f"{max(1, limit//4)}d",
+                '1h': f"{max(1, limit//24)}d",
+                '4h': f"{max(1, limit//6)}d",
+                '1d': f"{max(30, limit)}d"
+            }
+            period = period_map.get(timeframe, f"{limit}d")
+            ticker = yf.Ticker(yahoo_pair)
+            data = ticker.history(period=period, interval=timeframe)
+            
+            if data.empty:
+                logger.warning(f"Нет данных для {pair} {timeframe}")
+                return []
+            
+            quotes = []
+            for timestamp, row in data.iterrows():
+                quotes.append({
+                    'timestamp': timestamp.to_pydatetime(),
+                    'open': float(row['Open']),
+                    'high': float(row['High']),
+                    'low': float(row['Low']),
+                    'close': float(row['Close']),
+                    'volume': int(row['Volume'])
+                })
+            
+            # Сохраняем в кэш
+            self.quotes_cache[key] = {'time': now, 'quotes': quotes}
+            
+            # Сохраняем в базу данных
+            self.save_quotes(pair, timeframe, quotes)
+            
+            return quotes[-limit:] if len(quotes) > limit else quotes
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения котировок для {pair} {timeframe}: {e}")
+            # Пытаемся получить из базы данных
+            return self.get_quotes_from_db(pair, timeframe, limit)
     
     def save_quotes(self, pair: str, timeframe: str, quotes: List[Dict]):
         """Сохранение котировок в базу данных"""
@@ -2047,3 +2091,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+
+
