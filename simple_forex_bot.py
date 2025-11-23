@@ -21,7 +21,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 from advanced_trading_ai import AdvancedTradingAI
-from chart_generator import ChartGenerator
+from chart_generator import AdvancedChartGenerator as ChartGenerator
 
 # Настройка логирования
 logging.basicConfig(
@@ -36,13 +36,23 @@ load_dotenv()
 # Валютные пары и их спецификации для Exness
 CURRENCY_PAIRS = {
     'XAUUSD': {'spread': 0.2, 'commission': 0.0, 'swap_long': -2.5, 'swap_short': 0.5, 'leverage': 100},
+    'XAGUSD': {'spread': 0.3, 'commission': 0.0, 'swap_long': -2.0, 'swap_short': 0.4, 'leverage': 100},
+    'USOIL': {'spread': 0.4, 'commission': 0.0, 'swap_long': -3.0, 'swap_short': 1.0, 'leverage': 100},
     'EURUSD': {'spread': 0.1, 'commission': 0.0, 'swap_long': -0.8, 'swap_short': 0.2, 'leverage': 500},
     'GBPUSD': {'spread': 0.2, 'commission': 0.0, 'swap_long': -1.0, 'swap_short': 0.3, 'leverage': 500},
     'USDJPY': {'spread': 0.2, 'commission': 0.0, 'swap_long': 0.1, 'swap_short': -0.9, 'leverage': 500},
     'USDCHF': {'spread': 0.3, 'commission': 0.0, 'swap_long': 0.2, 'swap_short': -1.1, 'leverage': 500},
     'AUDUSD': {'spread': 0.2, 'commission': 0.0, 'swap_long': -0.6, 'swap_short': 0.1, 'leverage': 500},
     'USDCAD': {'spread': 0.2, 'commission': 0.0, 'swap_long': -0.4, 'swap_short': -0.3, 'leverage': 500},
-    'NZDUSD': {'spread': 0.3, 'commission': 0.0, 'swap_long': -0.5, 'swap_short': 0.1, 'leverage': 500}
+    'NZDUSD': {'spread': 0.3, 'commission': 0.0, 'swap_long': -0.5, 'swap_short': 0.1, 'leverage': 500},
+    'BTCUSD': {'spread': 25.0, 'commission': 0.0, 'swap_long': -10.0, 'swap_short': -10.0, 'leverage': 10},
+    'ETHUSD': {'spread': 12.0, 'commission': 0.0, 'swap_long': -6.0, 'swap_short': -6.0, 'leverage': 10},
+    'US30': {'spread': 2.0, 'commission': 0.0, 'swap_long': -3.0, 'swap_short': -3.0, 'leverage': 100},
+    'US100': {'spread': 2.5, 'commission': 0.0, 'swap_long': -3.0, 'swap_short': -3.0, 'leverage': 100},
+    'US500': {'spread': 2.0, 'commission': 0.0, 'swap_long': -3.0, 'swap_short': -3.0, 'leverage': 100},
+    'USTEC': {'spread': 2.5, 'commission': 0.0, 'swap_long': -3.0, 'swap_short': -3.0, 'leverage': 100},
+    'AAPL': {'spread': 0.5, 'commission': 0.0, 'swap_long': 0.0, 'swap_short': 0.0, 'leverage': 50},
+    'TSLA': {'spread': 0.5, 'commission': 0.0, 'swap_long': 0.0, 'swap_short': 0.0, 'leverage': 50}
 }
 
 # Таймфреймы и их периоды в днях
@@ -159,36 +169,35 @@ class ForexDatabase:
         conn.close()
     
     async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /aitrader - Продвинутый AI трейдер с графиками и 92%+ точностью"""
+        """Команда /aitrader - Продвинутый AI трейдер с 92%+ точностью"""
         try:
             user_text = ' '.join(context.args) if context.args else ""
             
             if not user_text:
                 help_text = (
-                    "🤖 *Advanced AI Trader - Профессиональный торговый помощник*\n\n"
-                    "📊 *Возможности:*\n"
+                    "🤖 Advanced AI Trader - Профессиональный торговый помощник\n\n"
+                    "📊 Возможности:\n"
                     "• Анализ сигналов с 92%+ точностью\n"
                     "• Продвинутые ML модели (RandomForest + GradientBoosting + NeuralNetwork)\n"
-                    "• Реальные торговые графики в реальном времени\n"
                     "• Ансамблевое предсказание с уверенностью\n"
                     "• Автообучение на новых данных\n\n"
-                    "📋 *Примеры использования:*\n"
+                    "📋 Примеры использования:\n"
                     "• `/aitrader Проанализируй XAUUSD на вход в лонг`\n"
                     "• `/aitrader Какие уровни лучше для EURUSD шорта?`\n"
-                    "• `/aitrader Покажи график GBPUSD и дай рекомендации`\n"
+                    "• `/aitrader Дай рекомендации по GBPUSD`\n"
                     "• `/aitrader Сигнал на USDJPY с минимальным риском`\n\n"
-                    "⚡ *Особенности:*\n"
+                    "⚡ Особенности:\n"
                     "• Продвинутые технические индикаторы (48 признаков)\n"
                     "• Мультитаймфреймовый анализ\n"
                     "• Проверка на дивергенции\n"
                     "• Оценка волатильности и объема\n"
                     "• Паттерн-распознавание\n\n"
-                    "*Целевая точность: 92%+"
+                    "Целевая точность: 92%+"
                 )
-                await update.message.reply_text(help_text, parse_mode='Markdown')
+                await update.message.reply_text(help_text)
                 return
             
-            await update.message.reply_text("🤖 *Advanced AI анализирует рынок...*", parse_mode='Markdown')
+            await update.message.reply_text("🤖 Advanced AI анализирует рынок...")
             
             # Определяем валютную пару из текста
             pair = None
@@ -213,6 +222,13 @@ class ForexDatabase:
             
             # Продвинутый анализ с ML
             ml_prediction = self.advanced_ai.predict_with_confidence(quotes_1h)
+            conf_raw = ml_prediction.get('confidence')
+            conf_val = conf_raw if isinstance(conf_raw, (int, float)) else {
+                'no_model': 0.5,
+                'low': 0.55,
+                'medium': 0.7,
+                'high': 0.85
+            }.get(str(conf_raw), 0.5)
             
             # Анализ направления из текста
             direction = None
@@ -236,36 +252,33 @@ class ForexDatabase:
             }
             
             evaluation = {
-                'score': int(ml_prediction['confidence'] * 10),
+                'score': int(conf_val * 10),
                 'ml_probability': ml_prediction['probability'],
-                'confidence': ml_prediction['confidence'],
+                'confidence': conf_val,
                 'expected_value': ml_prediction['probability'] - 0.5,
-                'recommendation': '🟢 СИЛЬНЫЙ СИГНАЛ' if ml_prediction['confidence'] > 0.8 else '🟡 УМЕРЕННЫЙ' if ml_prediction['confidence'] > 0.6 else '🔴 СЛАБЫЙ'
+                'recommendation': 'СИЛЬНЫЙ СИГНАЛ' if conf_val > 0.8 else 'УМЕРЕННЫЙ' if conf_val > 0.6 else 'СЛАБЫЙ'
             }
             
             # Сохраняем продвинутый сигнал
             self.db.save_ai_signal(signal_data, evaluation, 'aitrader')
             
-            # Генерация графика
-            chart_bytes = self.chart_generator.create_technical_chart(quotes_1h, pair)
-            
+            # Chart generation removed as requested - text analysis only
             # Формирование ответа
             current_price = quotes_1h[-1]['close']
             
             response = f"""
-🤖 *Advanced AI Trader Analysis - {pair}*
+🤖 Advanced AI Trader Analysis - {pair}
 
-📊 *Текущая ситуация:*
+Текущая ситуация:
 • Цена: {current_price:.5f}
-• Тренд (1H): {'🟢 Восходящий' if market_analysis['trend'] == 'bullish' else '🔴 Нисходящий'}
-• Тренд (15M): {'🟢 Восходящий' if mtf_analysis['trend'] == 'bullish' else '🔴 Нисходящий'}
-• Тренд (1D): {'🟢 Восходящий' if daily_analysis['trend'] == 'bullish' else '🔴 Нисходящий'}
+• Тренд (1H): {'Восходящий' if market_analysis['trend'] == 'bullish' else 'Нисходящий'}
+• Тренд (15M): {'Восходящий' if mtf_analysis['trend'] == 'bullish' else 'Нисходящий'}
+• Тренд (1D): {'Восходящий' if daily_analysis['trend'] == 'bullish' else 'Нисходящий'}
 
-🧠 *ML Ансамбль:*
-• Сигнал: {'📈 ЛОНГ' if ml_prediction['signal'] > 0 else '📉 ШОРТ'}
-• Уверенность: {ml_prediction['confidence']*100:.1f}% {'🟢' if ml_prediction['confidence'] > 0.8 else '🟡' if ml_prediction['confidence'] > 0.6 else '🔴'}
+ML Ансамбль:
+• Сигнал: {'ЛОНГ' if ml_prediction['signal'] > 0 else 'ШОРТ'}
+• Уверенность: {conf_val*100:.1f}%
 • Вероятность успеха: {ml_prediction['probability']*100:.1f}%
-• Точность модели: {self.advanced_ai.get_model_stats().get('recent_accuracy', 0)*100:.1f}%
 """
             
             # Технические уровни
@@ -273,7 +286,7 @@ class ForexDatabase:
             if bb_data['upper'] and bb_data['lower']:
                 response += f"""
 
-📈 *Ключевые уровни:*
+Ключевые уровни:
 • Сопротивление (BB верх): {bb_data['upper'][-1]:.5f}
 • Средняя (BB): {bb_data['middle'][-1]:.5f}
 • Поддержка (BB низ): {bb_data['lower'][-1]:.5f}
@@ -282,7 +295,7 @@ class ForexDatabase:
             # Рекомендации на основе анализа
             recommendations = []
             
-            if ml_prediction['confidence'] > 0.8 and ml_prediction['probability'] > 0.7:
+            if conf_val > 0.8 and ml_prediction['probability'] > 0.7:
                 if direction:
                     if (direction == 'long' and ml_prediction['signal'] > 0) or (direction == 'short' and ml_prediction['signal'] < 0):
                         recommendations.append("✅ Сильный сигнал в вашем направлении")
@@ -290,7 +303,7 @@ class ForexDatabase:
                         recommendations.append("⚠️ Сигнал против вашего направления")
                 else:
                     recommendations.append(f"📊 Рассмотрите {'лонг' if ml_prediction['signal'] > 0 else 'шорт'}")
-            elif ml_prediction['confidence'] > 0.6:
+            elif conf_val > 0.6:
                 recommendations.append("🟡 Умеренный сигнал - дождитесь подтверждения")
             else:
                 recommendations.append("🔴 Слабый сигнал - воздержитесь от входа")
@@ -306,35 +319,29 @@ class ForexDatabase:
             
             response += f"""
 
-💡 *AI Рекомендации:*
+AI Рекомендации:
 """
             for rec in recommendations:
                 response += f"• {rec}\n"
             
-            # Отправляем график если есть
-            if chart_bytes:
-                await update.message.reply_photo(chart_bytes, caption=response.strip(), parse_mode='Markdown')
-            else:
-                await update.message.reply_text(response.strip(), parse_mode='Markdown')
+            # Send text response only (charts removed as requested)
+            await update.message.reply_text(response.strip())
             
             # Дополнительная информация для продвинутых пользователей
             advanced_info = f"""
-🔬 *Advanced ML Stats:*
+Advanced ML Stats:
 • Модель RF: {ml_prediction.get('individual_predictions', {}).get('rf', 'N/A')}
 • Модель GB: {ml_prediction.get('individual_predictions', {}).get('gb', 'N/A')}
 • Модель NN: {ml_prediction.get('individual_predictions', {}).get('nn', 'N/A')}
-• Общая точность: {self.advanced_ai.get_model_stats().get('overall_accuracy', 0)*100:.1f}%
-• Статус производительности: {self.advanced_ai.get_model_stats().get('model_performance', 'N/A')}
 """
             
-            await update.message.reply_text(advanced_info, parse_mode='Markdown')
+            await update.message.reply_text(advanced_info)
             
         except Exception as e:
             logger.error(f"Ошибка в команде aitrader: {e}")
             await update.message.reply_text(
-                f"❌ *Ошибка Advanced AI:* {str(e)}\n"
-                "📌 Попробуйте еще раз или используйте /chatai",
-                parse_mode='Markdown'
+                f"❌ Ошибка Advanced AI: {str(e)}\n"
+                "📌 Попробуйте еще раз или используйте /chatai"
             )
     
     async def aistats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,7 +434,8 @@ class ForexDatabase:
                     response += f"• {pair}: {count} сигналов, {pair_win_rate*100:.1f}% точность\n"
             
             # Добавляем продвинутую статистику
-            advanced_stats = self.advanced_ai.get_model_stats()
+            stats_fn = getattr(self.advanced_ai, 'get_model_stats', None)
+            advanced_stats = stats_fn() if callable(stats_fn) else {}
             if 'recent_accuracy' in advanced_stats:
                 response += f"""
 
@@ -524,7 +532,7 @@ class ForexDatabase:
     def save_ai_signal(self, signal_data: Dict, evaluation: Dict, signal_type: str = 'chatai'):
         """Сохраняет сигнал AI для последующего анализа"""
         try:
-            conn = sqlite3.connect(self.db.db_path)
+            conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -618,7 +626,7 @@ class ForexDatabase:
     def update_ai_performance(self):
         """Обновляет статистику производительности AI"""
         try:
-            conn = sqlite3.connect(self.db.db_path)
+            conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             # Получаем закрытые сигналы за последний месяц
@@ -1077,11 +1085,39 @@ class TradingAIAssistant:
             'error': None
         }
         
-        # Поиск валютной пары
-        pair_pattern = r'(XAUUSD|EURUSD|GBPUSD|USDJPY|USDCHF|AUDUSD|USDCAD|NZDUSD)'
-        pair_match = re.search(pair_pattern, text.upper())
-        if pair_match:
-            signal_data['pair'] = pair_match.group(1)
+        text_up = text.upper()
+        
+        # 1) Прямой поиск по известным парам
+        for p in CURRENCY_PAIRS.keys():
+            if p in text_up:
+                signal_data['pair'] = p
+                break
+        
+        # 2) Синонимы и короткие обозначения
+        if not signal_data['pair']:
+            synonyms = {
+                'BTC': 'BTCUSD', 'BITCOIN': 'BTCUSD', 'БИТКОИН': 'BTCUSD',
+                'ETH': 'ETHUSD', 'ЭФИР': 'ETHUSD',
+                'XAU': 'XAUUSD', 'GOLD': 'XAUUSD', 'ЗОЛОТО': 'XAUUSD',
+                'XAG': 'XAGUSD', 'SILVER': 'XAGUSD', 'СЕРЕБРО': 'XAGUSD',
+                'OIL': 'USOIL', 'WTI': 'USOIL', 'НЕФТЬ': 'USOIL',
+                'NAS100': 'US100', 'NDX': 'US100', 'USTEC': 'US100', 'US100': 'US100',
+                'SPX': 'US500', 'SP500': 'US500', 'US500': 'US500',
+                'DJI': 'US30', 'DOW': 'US30', 'US30': 'US30'
+            }
+            for k, v in synonyms.items():
+                if k in text_up:
+                    signal_data['pair'] = v
+                    break
+        
+        # 3) Общий шаблон для шести буквенных тикеров
+        if not signal_data['pair']:
+            m = re.search(r'\b([A-Z]{6})\b', text_up)
+            if m:
+                cand = m.group(1)
+                if cand in CURRENCY_PAIRS:
+                    signal_data['pair'] = cand
+        
         
         # Поиск направления сделки
         if any(word in text.lower() for word in ['лонг', 'long', 'buy', 'покупка']):
@@ -1771,7 +1807,8 @@ class ForexBot:
         """Команда /status"""
         try:
             # Получаем статистику продвинутого AI
-            advanced_stats = self.advanced_ai.get_model_stats()
+            stats_fn = getattr(self.advanced_ai, 'get_model_stats', None)
+            advanced_stats = stats_fn() if callable(stats_fn) else {}
             
             status_text = f"""
 🤖 *Статус Forex AI Advisor*
@@ -1787,7 +1824,7 @@ class ForexBot:
 • Статус: ✅ Активен
 • Тип: Ансамбль (RF + GB + NN)
 • Признаков: 48
-• Точность: {advanced_stats.get('recent_accuracy', 0)*100:.1f}% {'🟢' if advanced_stats.get('recent_accuracy', 0) >= 0.92 else '🟡' if advanced_stats.get('recent_accuracy', 0) >= 0.80 else '🔴'}
+• Точность: {advanced_stats.get('recent_accuracy', 'N/A')}
 • Производительность: {advanced_stats.get('model_performance', 'N/A')}
 • Цель: 92%+ точность
 
@@ -1814,10 +1851,144 @@ class ForexBot:
             """
             
             await update.message.reply_text(status_text.strip(), parse_mode='Markdown')
-            
         except Exception as e:
             logger.error(f"Ошибка в команде status: {e}")
             await update.message.reply_text(f"❌ *Ошибка:* {str(e)}", parse_mode='Markdown')
+
+    async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            user_text = ' '.join(context.args) if context.args else ""
+            if not user_text:
+                help_text = (
+                    "🤖 Advanced AI Trader - Профессиональный торговый помощник\n\n"
+                    "📊 Возможности:\n"
+                    "• Анализ сигналов с 92%+ точностью\n"
+                    "• Продвинутые ML модели (RandomForest + GradientBoosting + NeuralNetwork)\n"
+                    "• Ансамблевое предсказание с уверенностью\n"
+                    "• Автообучение на новых данных\n\n"
+                    "📋 Примеры использования:\n"
+                    "• `/aitrader Проанализируй XAUUSD на вход в лонг`\n"
+                    "• `/aitrader Какие уровни лучше для EURUSD шорта?`\n"
+                    "• `/aitrader Дай рекомендации по GBPUSD`\n"
+                    "• `/aitrader Сигнал на USDJPY с минимальным риском`\n\n"
+                    "⚡ Особенности:\n"
+                    "• Продвинутые технические индикаторы (48 признаков)\n"
+                    "• Мультитаймфреймовый анализ\n"
+                    "• Проверка на дивергенции\n"
+                    "• Оценка волатильности и объема\n"
+                    "• Паттерн-распознавание\n\n"
+                    "Целевая точность: 92%+"
+                )
+                await update.message.reply_text(help_text)
+                return
+            await update.message.reply_text("🤖 Advanced AI анализирует рынок...")
+            pair = None
+            for currency_pair in CURRENCY_PAIRS.keys():
+                if currency_pair.lower() in user_text.lower():
+                    pair = currency_pair
+                    break
+            if not pair:
+                pair = 'XAUUSD'
+                await update.message.reply_text(f"Пара не распознана, анализируем {pair}")
+            quotes_1h = self.get_quotes(pair, '1h', 200)
+            quotes_15m = self.get_quotes(pair, '15m', 200)
+            quotes_1d = self.get_quotes(pair, '1d', 100)
+            if not quotes_1h or not quotes_15m:
+                await update.message.reply_text("Недостаточно данных для анализа")
+                return
+            ml_prediction = self.advanced_ai.predict_with_confidence(quotes_1h)
+            conf_raw = ml_prediction.get('confidence')
+            conf_val = conf_raw if isinstance(conf_raw, (int, float)) else {
+                'no_model': 0.5,
+                'low': 0.55,
+                'medium': 0.7,
+                'high': 0.85
+            }.get(str(conf_raw), 0.5)
+            direction = None
+            if any(word in user_text.lower() for word in ['лонг', 'long', 'buy', 'покупка']):
+                direction = 'long'
+            elif any(word in user_text.lower() for word in ['шорт', 'short', 'sell', 'продажа']):
+                direction = 'short'
+            market_analysis = self.ai_assistant.analyze_market_conditions(quotes_1h)
+            mtf_analysis = self.ai_assistant.analyze_market_conditions(quotes_15m)
+            daily_analysis = self.ai_assistant.analyze_market_conditions(quotes_1d)
+            signal_data = {
+                'pair': pair,
+                'direction': direction or ('long' if ml_prediction['signal'] > 0 else 'short'),
+                'timeframe': '1h',
+                'ai_probability': ml_prediction['probability'],
+                'ai_confidence': conf_val
+            }
+            evaluation = {
+                'score': int(conf_val * 10),
+                'ml_probability': ml_prediction['probability'],
+                'confidence': conf_val,
+                'expected_value': ml_prediction['probability'] - 0.5,
+                'recommendation': 'СИЛЬНЫЙ СИГНАЛ' if conf_val > 0.8 else 'УМЕРЕННЫЙ' if conf_val > 0.6 else 'СЛАБЫЙ'
+            }
+            self.db.save_ai_signal(signal_data, evaluation, 'aitrader')
+            current_price = quotes_1h[-1]['close']
+            response = f"""
+🤖 Advanced AI Trader Analysis - {pair}
+
+Текущая ситуация:
+• Цена: {current_price:.5f}
+• Тренд (1H): {'Восходящий' if market_analysis['trend'] == 'bullish' else 'Нисходящий'}
+• Тренд (15M): {'Восходящий' if mtf_analysis['trend'] == 'bullish' else 'Нисходящий'}
+• Тренд (1D): {'Восходящий' if daily_analysis['trend'] == 'bullish' else 'Нисходящий'}
+
+ML Ансамбль:
+• Сигнал: {'ЛОНГ' if ml_prediction['signal'] > 0 else 'ШОРТ'}
+• Уверенность: {conf_val*100:.1f}%
+• Вероятность успеха: {ml_prediction['probability']*100:.1f}%
+"""
+            bb_data = SimpleIndicators.bollinger_bands([q['close'] for q in quotes_1h], 20)
+            if bb_data['upper'] and bb_data['lower']:
+                response += f"""
+
+Ключевые уровни:
+• Сопротивление (BB верх): {bb_data['upper'][-1]:.5f}
+• Средняя (BB): {bb_data['middle'][-1]:.5f}
+• Поддержка (BB низ): {bb_data['lower'][-1]:.5f}
+"""
+            recommendations = []
+            if conf_val > 0.8 and ml_prediction['probability'] > 0.7:
+                if direction:
+                    if (direction == 'long' and ml_prediction['signal'] > 0) or (direction == 'short' and ml_prediction['signal'] < 0):
+                        recommendations.append("✅ Сильный сигнал в вашем направлении")
+                    else:
+                        recommendations.append("⚠️ Сигнал против вашего направления")
+                else:
+                    recommendations.append(f"📊 Рассмотрите {'лонг' if ml_prediction['signal'] > 0 else 'шорт'}")
+            elif conf_val > 0.6:
+                recommendations.append("🟡 Умеренный сигнал - дождитесь подтверждения")
+            else:
+                recommendations.append("🔴 Слабый сигнал - воздержитесь от входа")
+            atr_values = SimpleIndicators.atr(quotes_1h, 14)
+            if atr_values:
+                daily_range = atr_values[-1] / current_price * 100
+                if daily_range > 2:
+                    recommendations.append("⚠️ Высокая волатильность - уменьшите размер позиции")
+                elif daily_range < 0.5:
+                    recommendations.append("📉 Низкая волатильность - возможно боковик")
+            response += "\n\nAI Рекомендации:\n"
+            for rec in recommendations:
+                response += f"• {rec}\n"
+            await update.message.reply_text(response.strip())
+            advanced_info = f"""
+Advanced ML Stats:
+• Модель RF: {ml_prediction.get('individual_predictions', {}).get('rf', 'N/A')}
+• Модель GB: {ml_prediction.get('individual_predictions', {}).get('gb', 'N/A')}
+• Модель NN: {ml_prediction.get('individual_predictions', {}).get('nn', 'N/A')}
+"""
+            await update.message.reply_text(advanced_info)
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Ошибка Advanced AI: {str(e)}\n"
+                "📌 Попробуйте еще раз или используйте /chatai"
+            )
+            
+        
     
     def get_quotes(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
         """Получение котировок с кэшированием"""
@@ -1865,14 +2036,24 @@ class ForexBot:
     
     def pair_to_yahoo_format(self, pair: str) -> str:
         """Преобразование пары в формат Yahoo Finance"""
-        # XAUUSD -> GC=F (золото фьючерсы)
-        if pair == 'XAUUSD':
-            return 'GC=F'
-        elif pair == 'XAGUSD':  # Серебро
-            return 'SI=F'
-        else:
-            # Обычные валютные пары
+        mapping = {
+            'XAUUSD': 'GC=F',
+            'XAGUSD': 'SI=F',
+            'USOIL': 'CL=F',
+            'BTCUSD': 'BTC-USD',
+            'ETHUSD': 'ETH-USD',
+            'US30': '^DJI',
+            'US100': '^IXIC',
+            'US500': '^GSPC',
+            'USTEC': '^IXIC',
+            'AAPL': 'AAPL',
+            'TSLA': 'TSLA'
+        }
+        if pair in mapping:
+            return mapping[pair]
+        if len(pair) == 6 and pair.isalpha():
             return pair[:3] + pair[3:] + "=X"
+        return pair
     
     def analyze_data(self, quotes: List[Dict], pair: str, timeframe: str) -> Dict:
         """Анализ данных и расчет индикаторов"""
@@ -2065,10 +2246,16 @@ class ForexBot:
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("chatai", self.chatai_command))
         self.application.add_handler(CommandHandler("aitrader", self.aitrader_command))
-        self.application.add_handler(CommandHandler("aistats", self.aistats_command))
+        aistats_fn = getattr(self, "aistats_command", None)
+        if callable(aistats_fn):
+            self.application.add_handler(CommandHandler("aistats", aistats_fn))
         
-        # Запускаем фоновую задачу проверки сигналов
-        asyncio.create_task(self.periodic_signal_check())
+        # Планируем фоновую проверку сигналов через JobQueue
+        if hasattr(self.application, 'job_queue') and self.application.job_queue:
+            try:
+                self.application.job_queue.run_repeating(lambda ctx: self.check_signal_results(), interval=3600, first=3600)
+            except Exception as e:
+                logger.warning(f"JobQueue недоступен: {e}")
         
         # Запускаем бота
         logger.info("Бот запущен и готов к работе!")
