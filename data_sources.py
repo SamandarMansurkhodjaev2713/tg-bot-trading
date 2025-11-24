@@ -754,6 +754,16 @@ class DataManager:
         # HistData local
         self.sources['histdata'] = HistDataLocalSource(self.config.get('histdata_path', 'data/histdata'))
 
+        # Custom CSV local
+        self.sources['custom'] = CustomCSVSource(self.config.get('custom_path', 'data/custom'))
+        self.sources['histdata_csv'] = ExternalCSVSource(self.config.get('histdata_csv_path', 'data/external/histdata'))
+        self.sources['forexite_csv'] = ExternalCSVSource(self.config.get('forexite_csv_path', 'data/external/forexite'))
+        self.sources['stooq_db_csv'] = ExternalCSVSource(self.config.get('stooq_db_path', 'data/external/stooq'))
+        self.sources['investing_csv'] = ExternalCSVSource(self.config.get('investing_csv_path', 'data/external/investing'))
+        self.sources['kaggle_csv'] = ExternalCSVSource(self.config.get('kaggle_csv_path', 'data/external/kaggle'))
+        self.sources['github_csv'] = ExternalCSVSource(self.config.get('github_csv_path', 'data/external/github'))
+        self.sources['binance_vision'] = ExternalCSVSource(self.config.get('binance_vision_path', 'data/external/binance_vision'))
+
         # TrueFX local
         if self.config.get('truefx_path'):
             self.sources['truefx'] = TrueFXDataSource(self.config.get('truefx_path'))
@@ -865,6 +875,9 @@ class DataManager:
         
         # Forex pairs
         if any(currency in pair_upper for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD']):
+            for src in ['custom','histdata_csv','forexite_csv','stooq_db_csv','investing_csv','kaggle_csv','github_csv']:
+                if src in self.sources:
+                    return src
             if 'truefx' in self.sources:
                 return 'truefx'
             if pair_upper in ['EURUSD','GBPUSD'] and 'histdata' in self.sources:
@@ -886,7 +899,7 @@ class DataManager:
             if not primary and 'yahoo' in self.sources:
                 primary = await self.sources['yahoo'].get_historical_data(pair, timeframe, limit)
             backups = []
-            for src in ['truefx','stooq','alphavantage']:
+            for src in ['custom','histdata_csv','forexite_csv','stooq_db_csv','investing_csv','kaggle_csv','github_csv','binance_vision','truefx','stooq','alphavantage']:
                 if src in self.sources:
                     d = await self.sources[src].get_historical_data(pair, timeframe, limit)
                     if d:
@@ -1039,3 +1052,83 @@ class DataManager:
                 status[name] = "available"
         
         return status
+class CustomCSVSource(DataSource):
+    def __init__(self, base_path: str = 'data/custom'):
+        self.base_path = base_path
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            fname = os.path.join(self.base_path, f"{pair}_{timeframe}.csv")
+            if not os.path.exists(fname):
+                return []
+            df = pd.read_csv(fname)
+            cols = { 'UTC':'timestamp','Timestamp':'timestamp','Date':'timestamp','timestamp':'timestamp',
+                     'Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume',
+                     'open':'open','high':'high','low':'low','close':'close','volume':'volume' }
+            df = df.rename(columns=cols)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+            df = df.dropna()
+            df = df.sort_values('timestamp')
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+            quotes = []
+            for _, row in df.iterrows():
+                ts = row['timestamp'] if isinstance(row['timestamp'], datetime) else pd.to_datetime(row['timestamp'], utc=True, errors='coerce')
+                if pd.isna(ts):
+                    continue
+                quotes.append({
+                    'timestamp': ts.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0.0)),
+                    'pair': pair,
+                    'timeframe': timeframe
+                })
+            return quotes
+        except Exception as e:
+            print(f"Error reading Custom CSV file: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
+
+class ExternalCSVSource(DataSource):
+    def __init__(self, base_path: str):
+        self.base_path = base_path
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            fname = os.path.join(self.base_path, f"{pair}_{timeframe}.csv")
+            if not os.path.exists(fname):
+                return []
+            df = pd.read_csv(fname)
+            cols = { 'UTC':'timestamp','Timestamp':'timestamp','time':'timestamp','Date':'timestamp','timestamp':'timestamp',
+                     'Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume',
+                     'open':'open','high':'high','low':'low','close':'close','volume':'volume' }
+            df = df.rename(columns=cols)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+            df = df.dropna().sort_values('timestamp')
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+            quotes = []
+            for _, row in df.iterrows():
+                quotes.append({
+                    'timestamp': row['timestamp'].isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0.0)),
+                    'pair': pair,
+                    'timeframe': timeframe
+                })
+            return quotes
+        except Exception as e:
+            print(f"Error reading external CSV: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return

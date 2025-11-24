@@ -1,126 +1,183 @@
-# Read the current broken file
-with open('simple_forex_bot.py', 'r', encoding='utf-8') as f:
-    content = f.read()
+"""complete_fix: безопасный патчер функции aitrader_command.
 
-# Create a completely clean version by finding the function boundaries
-# and replacing with a working version
-start_marker = '    async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):'
-end_marker = '        except Exception as e:'
+Этот модуль читает целевой Python-файл, находит функцию
+`aitrader_command` (включая `async def` внутри класса) через AST
+и заменяет её на исправленную версию с расширенным описанием.
 
-# Split the content
-parts = content.split(start_marker)
-before_part = parts[0]
+Особенности:
+- Надёжный поиск по AST с точными границами (lineno/end_lineno)
+- Безопасная запись (с бэкапом) и детальная обработка исключений
+- Соответствие PEP8, docstrings, комментарии на сложных участках
+"""
 
-if len(parts) > 1:
-    after_parts = parts[1].split(end_marker)
-    after_part = end_marker + after_parts[1] if len(after_parts) > 1 else ''
-else:
-    after_part = ''
+from __future__ import annotations
 
-# Create a completely clean function with proper string formatting
-clean_function = '''    async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /aitrader - Продвинутый AI трейдер с графиками и 92%+ точностью"""
-        try:
-            user_text = ' '.join(context.args) if context.args else ""
-            
-            if not user_text:
-                help_text = '''🤖 *Advanced AI Trader - Профессиональный торговый помощник*
+import ast
+import io
+import os
+import shutil
+import sys
+from dataclasses import dataclass
+from typing import Optional
 
-📊 *Возможности:*
-• Анализ сигналов с 92%+ точностью
-• Продвинутые ML модели (RandomForest + GradientBoosting + NeuralNetwork)
-• Реальные торговые графики в реальном времени
-• Ансамблевое предсказание с уверенностью
-• Автообучение на новых данных
 
-📋 *Примеры использования:*
-• `/aitrader Проанализируй XAUUSD на вход в лонг`
-• `/aitrader Какие уровни лучше для EURUSD шорта?`
-• `/aitrader Покажи график GBPUSD и дай рекомендации`
-• `/aitrader Сигнал на USDJPY с минимальным риском`
+@dataclass
+class FixResult:
+    """Результат выполнения фикса.
 
-⚡ *Особенности:*
-• Продвинутые технические индикаторы (48 признаков)
-• Мультитаймфреймовый анализ
-• Проверка на дивергенции
-• Оценка волатильности и объема
-• Паттерн-распознавание
+    Attributes:
+        target_path: путь к целевому файлу
+        replaced: была ли функция заменена
+        message: описание результата
+    """
 
-*Целевая точность: 92%+"*'''
-                await update.message.reply_text(help_text, parse_mode='Markdown')
-                return
-            
-            await update.message.reply_text("🤖 *Advanced AI анализирует рынок...*", parse_mode='Markdown')
-            
-            # Определяем валютную пару из текста
-            pair = None
-            for currency_pair in CURRENCY_PAIRS.keys():
-                if currency_pair.lower() in user_text.lower():
-                    pair = currency_pair
-                    break
-            
-            if not pair:
-                # Если пара не найдена, используем XAUUSD по умолчанию
-                pair = 'XAUUSD'
-                await update.message.reply_text(f"💡 *Пара не распознана, анализируем {pair}*", parse_mode='Markdown')
-            
-            # Получаем данные для анализа
-            quotes_1h = self.get_quotes(pair, '1h', 200)
-            quotes_15m = self.get_quotes(pair, '15m', 200)
-            quotes_1d = self.get_quotes(pair, '1d', 100)
-            
-            if not quotes_1h or not quotes_15m:
-                await update.message.reply_text("❌ Недостаточно данных для анализа")
-                return
-            
-            # Используем продвинутый AI для анализа
-            from advanced_trading_ai import AdvancedTradingAI
-            ai = AdvancedTradingAI()
-            
-            # Анализируем рынок
-            analysis_1h = ai.analyze_market(quotes_1h, pair, '1h')
-            analysis_15m = ai.analyze_market(quotes_15m, pair, '15m')
-            
-            # Получаем сигнал
-            signal = ai.generate_signal(quotes_1h, pair)
-            
-            # Создаем график
-            from chart_generator import ChartGenerator
-            chart_gen = ChartGenerator()
-            chart_bytes = chart_gen.create_technical_chart(quotes_1h[-50:], pair, signal)
-            
-            # Формируем ответ
-            response = f"""🤖 *Advanced AI Analysis for {pair}*
+    target_path: str
+    replaced: bool
+    message: str
 
-📊 *Market Analysis:*
-• 1H Trend: {analysis_1h.get('trend', 'Unknown')}
-• 15M Trend: {analysis_15m.get('trend', 'Unknown')}
-• Volatility: {analysis_1h.get('volatility', 'Unknown')}
 
-🎯 *Signal:*
-• Direction: {signal.get('direction', 'HOLD')}
-• Confidence: {signal.get('confidence', 0):.1f}%
-• Expected Value: {signal.get('expected_value', 0):.3f}
-• Entry: {signal.get('entry_price', 'N/A')}
-• Stop Loss: {signal.get('stop_loss', 'N/A')}
-• Take Profit: {signal.get('take_profit', 'N/A')}
+class FixError(Exception):
+    """Специализированное исключение пайплайна фикса."""
 
-⚡ *ML Ensemble Prediction:*
-• Random Forest: {signal.get('rf_probability', 0):.1f}%
-• Gradient Boosting: {signal.get('gb_probability', 0):.1f}%
-• Neural Network: {signal.get('nn_probability', 0):.1f}%
-• Final Consensus: {signal.get('ensemble_probability', 0):.1f}%"""
-            
-            # Отправляем график и анализ
-            if chart_bytes:
-                await update.message.reply_photo(chart_bytes, caption=response, parse_mode='Markdown')
-            else:
-                await update.message.reply_text(response, parse_mode='Markdown')
-                
-'''
 
-# Write the complete fixed file
-with open('simple_forex_bot.py', 'w', encoding='utf-8') as f:
-    f.write(before_part + clean_function + after_part)
+def read_text(path: str, encoding: str = "utf-8") -> str:
+    """Прочитать файл как текст с обработкой ошибок."""
+    try:
+        with io.open(path, "r", encoding=encoding) as f:
+            return f.read()
+    except FileNotFoundError as e:
+        raise FixError(f"Файл не найден: {path}") from e
+    except OSError as e:
+        raise FixError(f"Ошибка чтения файла {path}: {e}") from e
 
-print("Created completely clean version of aitrader_command function")
+
+def write_text(path: str, content: str, encoding: str = "utf-8") -> None:
+    """Записать текст в файл с атомарным сохранением и бэкапом."""
+    try:
+        backup = path + ".bak"
+        if os.path.exists(path):
+            shutil.copy2(path, backup)
+        tmp_path = path + ".tmp"
+        with io.open(tmp_path, "w", encoding=encoding) as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except OSError as e:
+        raise FixError(f"Ошибка записи файла {path}: {e}") from e
+
+
+def _find_function_span(module_src: str, func_name: str) -> Optional[tuple[int, int]]:
+    """Найти диапазон строк функции по имени через AST.
+
+    Возвращает (start_line, end_line) 1-индексированные, либо None.
+    """
+    try:
+        tree = ast.parse(module_src)
+    except SyntaxError as e:
+        raise FixError(f"Синтаксическая ошибка в целевом модуле: {e}") from e
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            start = getattr(node, "lineno", None)
+            end = getattr(node, "end_lineno", None)
+            if start and end and end >= start:
+                return start, end
+    return None
+
+
+def _build_clean_function(indent: str = "    ") -> str:
+    """Сформировать исправленную версию функции с указанным отступом."""
+    body = (
+        f"{indent}async def aitrader_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):\n"
+        f"{indent}    \"\"\"Команда /aitrader — продвинутый AI‑трейдер с графиками и описанием.\n"
+        f"{indent}    Показывает справку при пустом вводе, иначе проводит анализ рынка.\n"
+        f"{indent}    \"\"\"\n"
+        f"{indent}    try:\n"
+        f"{indent}        user_text = ' '.join(context.args) if context.args else ''\n"
+        f"{indent}        if not user_text:\n"
+        f"{indent}            help_text = (\n"
+        f"{indent}                '🤖 *Advanced AI Trader — Профессиональный торговый помощник*\n\n'
+        f"{indent}                '📊 *Возможности:*\n'
+        f"{indent}                '• Анализ сигналов\n'
+        f"{indent}                '• Ансамблевые ML модели\n'
+        f"{indent}                '• Реальные графики\n\n'
+        f"{indent}                '📋 *Примеры:*\n'
+        f"{indent}                '• `/aitrader Проанализируй XAUUSD`\n'
+        f"{indent}                '• `/aitrader Уровни для EURUSD`\n\n'
+        f"{indent}                '⚡ *Особенности:*\n'
+        f"{indent}                '• Мультитаймфрейм анализ, индикаторы, паттерны\n'\n"
+        f"{indent}            )\n"
+        f"{indent}            await update.message.reply_text(help_text, parse_mode='Markdown')\n"
+        f"{indent}            return\n"
+        f"{indent}        await update.message.reply_text('🤖 *Advanced AI анализирует рынок...*', parse_mode='Markdown')\n"
+        f"{indent}        pair = None\n"
+        f"{indent}        for currency_pair in CURRENCY_PAIRS.keys():\n"
+        f"{indent}            if currency_pair.lower() in user_text.lower():\n"
+        f"{indent}                pair = currency_pair\n"
+        f"{indent}                break\n"
+        f"{indent}        if not pair:\n"
+        f"{indent}            pair = 'XAUUSD'\n"
+        f"{indent}            await update.message.reply_text(f'💡 *Пара не распознана, анализируем {pair}*', parse_mode='Markdown')\n"
+        f"{indent}        quotes_1h = self.get_quotes(pair, '1h', 200)\n"
+        f"{indent}        quotes_15m = self.get_quotes(pair, '15m', 200)\n"
+        f"{indent}        if not quotes_1h or not quotes_15m:\n"
+        f"{indent}            await update.message.reply_text('❌ Недостаточно данных для анализа')\n"
+        f"{indent}            return\n"
+        f"{indent}        from advanced_trading_ai import AdvancedTradingAI\n"
+        f"{indent}        ai = AdvancedTradingAI()\n"
+        f"{indent}        analysis_1h = ai.analyze_market(quotes_1h, pair, '1h')\n"
+        f"{indent}        analysis_15m = ai.analyze_market(quotes_15m, pair, '15m')\n"
+        f"{indent}        signal = ai.generate_signal(quotes_1h, pair)\n"
+        f"{indent}        from chart_generator import ChartGenerator\n"
+        f"{indent}        chart_gen = ChartGenerator()\n"
+        f"{indent}        chart_bytes = chart_gen.create_technical_chart(quotes_1h[-50:], pair, signal)\n"
+        f"{indent}        response = (\n"
+        f"{indent}            f'🤖 *Advanced AI Analysis for {pair}*\n\n'
+        f"{indent}            f'📊 *Market Analysis:*\n• 1H Trend: {analysis_1h.get('trend', 'Unknown')}\n• 15M Trend: {analysis_15m.get('trend', 'Unknown')}\n'\n"
+        f"{indent}            f'🎯 *Signal:*\n• Direction: {signal.get('direction', 'HOLD')}\n• Confidence: {signal.get('confidence', 0):.1f}%\n'\n"
+        f"{indent}        )\n"
+        f"{indent}        if chart_bytes:\n"
+        f"{indent}            await update.message.reply_photo(chart_bytes, caption=response, parse_mode='Markdown')\n"
+        f"{indent}        else:\n"
+        f"{indent}            await update.message.reply_text(response, parse_mode='Markdown')\n"
+        f"{indent}    except Exception as e:\n"
+        f"{indent}        await update.message.reply_text(f'❌ Ошибка: {e}')\n"
+    )
+    return body
+
+
+def replace_function_in_file(target_path: str, func_name: str = "aitrader_command") -> FixResult:
+    """Заменить указанную функцию на чистую версию через AST."""
+    src = read_text(target_path)
+    span = _find_function_span(src, func_name)
+    if not span:
+        raise FixError(f"Функция {func_name} не найдена в {target_path}")
+
+    start, end = span
+    lines = src.splitlines()
+    def_line = lines[start - 1]
+    # Сохраняем ведущий отступ дефиниции функции
+    indent = def_line[: len(def_line) - len(def_line.lstrip())]
+    new_func = _build_clean_function(indent)
+
+    new_src = "\n".join(lines[: start - 1]) + "\n" + new_func + "\n" + "\n".join(lines[end:])
+    write_text(target_path, new_src)
+    return FixResult(target_path=target_path, replaced=True, message="Функция заменена успешно")
+
+
+def main(argv: list[str]) -> int:
+    """CLI вход: заменить функцию в simple_forex_bot.py."""
+    target = "simple_forex_bot.py"
+    try:
+        res = replace_function_in_file(target)
+        print(res.message)
+        return 0
+    except FixError as e:
+        print(f"[ERROR] {e}")
+        return 2
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

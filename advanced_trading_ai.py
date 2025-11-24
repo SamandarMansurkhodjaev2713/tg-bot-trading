@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, brier_score_loss
 from sklearn.calibration import CalibratedClassifierCV
@@ -221,6 +221,115 @@ class AdvancedTradingAI:
         baseline = self._time_series_cv_metrics(base_feats, base_labels)
         improved = self._time_series_cv_metrics(mtf_feats, mtf_labels)
         return {'train': train_res, 'predictions': preds, 'baseline_cv': baseline, 'improved_cv': improved}
+
+    def preprocess_quotes(self, quotes: List[Dict]) -> List[Dict]:
+        if not quotes:
+            return []
+        df = pd.DataFrame(quotes)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+        df = df.dropna().sort_values('timestamp')
+        for col in ['open','high','low','close','volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna()
+        r = df['close'].pct_change().fillna(0)
+        q1 = r.quantile(0.01)
+        q99 = r.quantile(0.99)
+        r = r.clip(q1, q99)
+        df['close'] = df['close'].shift(1) * (1 + r)
+        df = df.dropna()
+        out = []
+        for idx, row in df.iterrows():
+            out.append({'timestamp': idx.isoformat(), 'open': float(row['open']), 'high': float(row['high']), 'low': float(row['low']), 'close': float(row['close']), 'volume': float(row.get('volume',0.0))})
+        return out
+
+    def split_by_date(self, features: List[Dict[str,float]], labels: List[int], timestamps: List[datetime]) -> Dict[str, Dict]:
+        train_X, train_y, val_X, val_y, test_X, test_y = [], [], [], [], [], []
+        for f, y, t in zip(features, labels, timestamps):
+            if t.year <= 2021:
+                train_X.append(f); train_y.append(y)
+            elif t.year == 2022:
+                val_X.append(f); val_y.append(y)
+            else:
+                test_X.append(f); test_y.append(y)
+        if not train_X:
+            n = len(features)
+            if n == 0:
+                return {'train': {'X': [], 'y': []}, 'val': {'X': [], 'y': []}, 'test': {'X': [], 'y': []}}
+            i1 = int(n*0.6)
+            i2 = int(n*0.8)
+            train_X = features[:i1]; train_y = labels[:i1]
+            val_X = features[i1:i2]; val_y = labels[i1:i2]
+            test_X = features[i2:]; test_y = labels[i2:]
+        return {'train': {'X': train_X, 'y': train_y}, 'val': {'X': val_X, 'y': val_y}, 'test': {'X': test_X, 'y': test_y}}
+
+    def _prepare_scalers(self, feature_names: List[str]) -> None:
+        self.scalers['robust'] = RobustScaler()
+        self.scalers['minmax'] = MinMaxScaler()
+
+    def _scale_feature_matrix(self, X: List[Dict[str,float]]) -> np.ndarray:
+        if not X:
+            return np.zeros((0,0))
+        keys = sorted(list({k for f in X for k in f.keys()}))
+        M = np.array([[f.get(k,0.0) for k in keys] for f in X], dtype=np.float32)
+        self._prepare_scalers(keys)
+        idx_mm = [i for i,k in enumerate(keys) if any(x in k.lower() for x in ['rsi','stoch','macd','adx','mfi','obv','cci'])]
+        idx_rob = [i for i in range(len(keys)) if i not in idx_mm]
+        M_mm_part = self.scalers['minmax'].fit_transform(M[:, idx_mm]) if idx_mm else np.zeros((M.shape[0],0))
+        M_rob_part = self.scalers['robust'].fit_transform(M[:, idx_rob]) if idx_rob else np.zeros((M.shape[0],0))
+        M_s = np.concatenate([M_rob_part, M_mm_part], axis=1)
+        self.feature_names = [f"rob_{keys[i]}" for i in idx_rob] + [f"mm_{keys[i]}" for i in idx_mm]
+        return M_s
+
+    def train_and_compare_models(self, dataset: Dict[str, List[Dict]], pair: str) -> Dict[str, Any]:
+        feats = []
+        labs = []
+        ts = []
+        quotes = dataset.get(pair, [])
+        if len(quotes) < 180:
+            return {'models': {}, 'metrics': {}}
+        closes = pd.Series([q['close'] for q in quotes])
+        times = [pd.to_datetime(q['timestamp']) for q in quotes]
+        for i in range(120, len(quotes)-1):
+            window = quotes[:i+1]
+            f = self.extract_multi_timeframe_features(window, pair)
+            feats.append(f)
+            ch = float(closes.pct_change().iloc[i+1])
+            labs.append(1 if ch > 0 else 0)
+            ts.append(times[i])
+        splits = self.split_by_date(feats, labs, ts)
+        Xtr = self._scale_feature_matrix(splits['train']['X'])
+        ytr = np.array(splits['train']['y'])
+        Xva = self._scale_feature_matrix(splits['val']['X'])
+        yva = np.array(splits['val']['y'])
+        Xte = self._scale_feature_matrix(splits['test']['X'])
+        yte = np.array(splits['test']['y'])
+        models = {}
+        metrics = {}
+        rf = RandomForestClassifier(n_estimators=200, random_state=42, max_depth=12)
+        rf.fit(Xtr, ytr)
+        pr_va = rf.predict(Xva) if len(Xva)>0 else np.array([])
+        pr_te = rf.predict(Xte) if len(Xte)>0 else np.array([])
+        models['RandomForest'] = rf
+        metrics['RandomForest'] = {
+            'accuracy_val': float(accuracy_score(yva, pr_va)) if len(pr_va)>0 else 0.0,
+            'accuracy_test': float(accuracy_score(yte, pr_te)) if len(pr_te)>0 else 0.0,
+            'precision_test': float(precision_score(yte, pr_te, zero_division=0)) if len(pr_te)>0 else 0.0,
+            'recall_test': float(recall_score(yte, pr_te, zero_division=0)) if len(pr_te)>0 else 0.0
+        }
+        gb = GradientBoostingClassifier()
+        gb.fit(Xtr, ytr)
+        pr_va_g = gb.predict(Xva) if len(Xva)>0 else np.array([])
+        pr_te_g = gb.predict(Xte) if len(Xte)>0 else np.array([])
+        models['GradientBoost'] = gb
+        metrics['GradientBoost'] = {
+            'accuracy_val': float(accuracy_score(yva, pr_va_g)) if len(pr_va_g)>0 else 0.0,
+            'accuracy_test': float(accuracy_score(yte, pr_te_g)) if len(pr_te_g)>0 else 0.0,
+            'precision_test': float(precision_score(yte, pr_te_g, zero_division=0)) if len(pr_te_g)>0 else 0.0,
+            'recall_test': float(recall_score(yte, pr_te_g, zero_division=0)) if len(pr_te_g)>0 else 0.0
+        }
+        best = max(metrics.items(), key=lambda kv: kv[1]['accuracy_val'])[0] if metrics else 'RandomForest'
+        self.models['random_forest' if best=='RandomForest' else 'gradient_boost'] = models[best]
+        return {'models': metrics, 'best_model': best}
 
     def _build_samples(self, data: Dict[str, List[Dict]], use_mtf: bool) -> Tuple[List[Dict[str,float]], List[int]]:
         features = []
@@ -955,11 +1064,51 @@ class AdvancedTradingAI:
             # Make prediction
             signal, probability, confidence = self.predict(features)
             
+            # Collect per-model details for diagnostics
+            individual_predictions = {}
+            individual_probabilities = {}
+            if self.models:
+                try:
+                    X = [features.get(fn, 0.0) for fn in self.feature_names] if self.feature_names else []
+                    X = np.array([X]) if X else None
+                    if X is not None:
+                        if 'main' in self.scalers:
+                            Xs = self.scalers['main'].transform(X)
+                        else:
+                            Xs = X
+                        for name, model in self.models.items():
+                            try:
+                                pred = model.predict(Xs)[0]
+                                individual_predictions[name] = int(pred)
+                                if hasattr(model, 'predict_proba'):
+                                    proba = model.predict_proba(Xs)[0]
+                                    if len(proba) > 1:
+                                        # Assume class 1 corresponds to up/long
+                                        p1 = proba[1] if getattr(model, 'classes_', [0,1])[1] == 1 else proba[0]
+                                    else:
+                                        p1 = proba[0]
+                                else:
+                                    p1 = 0.6 if pred == 1 else 0.4
+                                individual_probabilities[name] = float(p1)
+                            except Exception as e:
+                                individual_predictions[name] = 0
+                                individual_probabilities[name] = 0.5
+                    else:
+                        # No feature_names available yet
+                        individual_predictions = {}
+                        individual_probabilities = {}
+                except Exception:
+                    individual_predictions = {}
+                    individual_probabilities = {}
+            
             return {
                 'signal': signal,
                 'probability': probability,
                 'confidence': confidence,
-                'features': features
+                'features': features,
+                'individual_predictions': individual_predictions,
+                'individual_probabilities': individual_probabilities,
+                'ensemble_probability': probability
             }
             
         except Exception as e:

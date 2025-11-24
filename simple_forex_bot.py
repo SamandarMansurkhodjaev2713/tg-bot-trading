@@ -266,14 +266,18 @@ class ForexDatabase:
             # Формирование ответа
             current_price = quotes_1h[-1]['close']
             
+            trend_map = {'bullish': '🟢 Восходящий', 'bearish': '🔴 Нисходящий'}
+            trend_1h = trend_map.get(market_analysis.get('trend'), '⚪ Нейтральный')
+            trend_15m = trend_map.get(mtf_analysis.get('trend'), '⚪ Нейтральный')
+            trend_1d = trend_map.get(daily_analysis.get('trend'), '⚪ Нейтральный')
             response = f"""
 🤖 Advanced AI Trader Analysis - {pair}
 
 Текущая ситуация:
 • Цена: {current_price:.5f}
-• Тренд (1H): {'Восходящий' if market_analysis['trend'] == 'bullish' else 'Нисходящий'}
-• Тренд (15M): {'Восходящий' if mtf_analysis['trend'] == 'bullish' else 'Нисходящий'}
-• Тренд (1D): {'Восходящий' if daily_analysis['trend'] == 'bullish' else 'Нисходящий'}
+• Тренд (1H): {trend_1h}
+• Тренд (15M): {trend_15m}
+• Тренд (1D): {trend_1d}
 
 ML Ансамбль:
 • Сигнал: {'ЛОНГ' if ml_prediction['signal'] > 0 else 'ШОРТ'}
@@ -283,7 +287,7 @@ ML Ансамбль:
             
             # Технические уровни
             bb_data = SimpleIndicators.bollinger_bands([q['close'] for q in quotes_1h], 20)
-            if bb_data['upper'] and bb_data['lower']:
+            if bb_data.get('upper') and bb_data.get('lower') and bb_data.get('middle'):
                 response += f"""
 
 Ключевые уровни:
@@ -328,11 +332,13 @@ AI Рекомендации:
             await update.message.reply_text(response.strip())
             
             # Дополнительная информация для продвинутых пользователей
+            ip = ml_prediction.get('individual_predictions', {})
+            ipp = ml_prediction.get('individual_probabilities', {})
             advanced_info = f"""
 Advanced ML Stats:
-• Модель RF: {ml_prediction.get('individual_predictions', {}).get('rf', 'N/A')}
-• Модель GB: {ml_prediction.get('individual_predictions', {}).get('gb', 'N/A')}
-• Модель NN: {ml_prediction.get('individual_predictions', {}).get('nn', 'N/A')}
+• RandomForest pred: {ip.get('random_forest', 'N/A')} | proba: {ipp.get('random_forest', 'N/A')}
+• GradientBoost pred: {ip.get('gradient_boost', 'N/A')} | proba: {ipp.get('gradient_boost', 'N/A')}
+• NeuralNetwork pred: {ip.get('neural_network', 'N/A')} | proba: {ipp.get('neural_network', 'N/A')}
 """
             
             await update.message.reply_text(advanced_info)
@@ -687,6 +693,42 @@ Advanced ML Stats:
         
         return quotes
 
+    def _resample_to_timeframe(self, quotes: List[Dict], target_tf: str, pair: str) -> List[Dict]:
+        try:
+            if not quotes:
+                return []
+            import pandas as pd
+            df = pd.DataFrame([{
+                'timestamp': pd.to_datetime(q['timestamp'], utc=True, errors='coerce'),
+                'open': float(q['open']),
+                'high': float(q['high']),
+                'low': float(q['low']),
+                'close': float(q['close']),
+                'volume': float(q.get('volume', 0.0))
+            } for q in quotes])
+            df = df.dropna()
+            if df.empty:
+                return []
+            df = df.sort_values('timestamp').set_index('timestamp')
+            rule_map = {'1m':'1min','5m':'5min','15m':'15min','30m':'30min','1h':'1h','4h':'4h','1d':'1d'}
+            rule = rule_map.get(target_tf, '1h')
+            rdf = df.resample(rule).agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
+            out = []
+            for idx, row in rdf.iterrows():
+                out.append({
+                    'timestamp': idx.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0.0)),
+                    'pair': pair,
+                    'timeframe': target_tf
+                })
+            return out
+        except Exception:
+            return []
+
 class SimpleIndicators:
     """Простые технические индикаторы без pandas"""
     
@@ -1012,13 +1054,30 @@ class SimpleMLModel:
                 logger.error("Недостаточно данных для обучения")
                 return False
             
+            # Проверяем распределение классов
+            import numpy as np
+            unique, counts = np.unique(labels, return_counts=True)
+            class_counts = dict(zip(unique.tolist(), counts.tolist()))
+            can_stratify = all(c >= 2 for c in class_counts.values()) and len(unique) >= 2
+            
             # Разделяем данные на обучающую и тестовую выборки
-            X_train, X_test, y_train, y_test = train_test_split(
-                features, labels, test_size=0.2, random_state=42, stratify=labels
-            )
+            try:
+                if can_stratify:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        features, labels, test_size=0.2, random_state=42, stratify=labels
+                    )
+                else:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        features, labels, test_size=0.2, random_state=42
+                    )
+            except Exception as e:
+                logger.warning(f"Проблема при разделении данных: {e}. Используем нестратифицированное разделение.")
+                X_train, X_test, y_train, y_test = train_test_split(
+                    features, labels, test_size=0.2, random_state=42
+                )
             
             # Обучаем модель
-            self.model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=10)
+            self.model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=10, class_weight='balanced')
             self.model.fit(X_train, y_train)
             
             # Оцениваем качество
@@ -1188,6 +1247,24 @@ class TradingAIAssistant:
         direction = signal_data['direction']
         sl = signal_data['stop_loss']
         tp = signal_data['take_profit']
+        atr = market_analysis.get('atr', current_price * 0.01)
+        risk_settings = self.risk_levels[signal_data['risk_level']]
+        min_rr = risk_settings['min_rr_ratio']
+        adjusted = False
+        if direction == 'long':
+            if sl >= current_price or (current_price - sl) < atr * 1.2:
+                sl = current_price - max(atr * 1.5, (current_price * 0.0003))
+                adjusted = True
+            if tp <= current_price or (tp - current_price) < min_rr * (current_price - sl):
+                tp = current_price + max(min_rr * (current_price - sl), atr * 2.0)
+                adjusted = True
+        else:
+            if sl <= current_price or (sl - current_price) < atr * 1.2:
+                sl = current_price + max(atr * 1.5, (current_price * 0.0003))
+                adjusted = True
+            if tp >= current_price or (current_price - tp) < min_rr * (sl - current_price):
+                tp = current_price - max(min_rr * (sl - current_price), atr * 2.0)
+                adjusted = True
         
         # Расчет риска и соотношения риск/прибыль
         if direction == 'long':
@@ -1200,8 +1277,6 @@ class TradingAIAssistant:
             risk_percentage = (risk / current_price) * 100
         
         rr_ratio = reward / risk if risk > 0 else 0
-        
-        risk_settings = self.risk_levels[signal_data['risk_level']]
         
         ml_probs = market_analysis.get('ml_probabilities', {})
         p_buy = float(ml_probs.get('buy', 0.5))
@@ -1326,7 +1401,10 @@ class TradingAIAssistant:
             'risk_reward_ratio': rr_ratio,
             'risk_percentage': risk_percentage,
             'expected_value': expected_value,
-            'market_conditions': market_analysis
+            'market_conditions': market_analysis,
+            'adjusted': adjusted,
+            'adjusted_stop_loss': sl,
+            'adjusted_take_profit': tp
         }
 
 class ForexBot:
@@ -1417,6 +1495,13 @@ class ForexBot:
             
             # Анализируем данные
             analysis = self.analyze_data(quotes, pair, timeframe)
+            if not analysis or 'current_price' not in analysis:
+                await update.message.reply_text(
+                    "❌ *Недостаточно данных для полноценного анализа*\n"
+                    "📌 Попробуйте другой таймфрейм или больше истории",
+                    parse_mode='Markdown'
+                )
+                return
             
             # Формируем ответ
             response = f"""
@@ -1498,16 +1583,29 @@ class ForexBot:
         """Команда /train"""
         try:
             args = context.args
-            if len(args) < 2:
+            if not args:
                 await update.message.reply_text(
-                    "❌ *Ошибка:* Укажите валютную пару и таймфрейм\n"
-                    "📌 *Пример:* `/train XAUUSD 1d`",
+                    "❌ *Ошибка:* Укажите валютную пару (и при необходимости таймфрейм)\n"
+                    "📌 *Примеры:* `/train EURUSD`, `/train EURUSD 15m`",
                     parse_mode='Markdown'
                 )
                 return
             
             pair = args[0].upper()
-            timeframe = args[1].lower()
+            timeframe = args[1].lower() if len(args) >= 2 else None
+            
+            if not timeframe:
+                try:
+                    candidates = ['15m','1h','1d','5m','1m']
+                    found = None
+                    for tf in candidates:
+                        fp = os.path.join('data','custom', f"{pair}_{tf}.csv")
+                        if os.path.exists(fp):
+                            found = tf
+                            break
+                    timeframe = found or '1h'
+                except Exception:
+                    timeframe = '1h'
             
             if pair not in CURRENCY_PAIRS:
                 available_pairs = ', '.join(CURRENCY_PAIRS.keys())
@@ -1528,22 +1626,111 @@ class ForexBot:
                 return
             
             await update.message.reply_text(f"🧠 *Обучение модели {pair} {timeframe}...*", parse_mode='Markdown')
-            
-            # Получаем больше данных для обучения
+
             quotes = self.get_quotes(pair, timeframe, 500)
-            
-            if len(quotes) < 100:
+
+            if len(quotes) < 60:
+                try:
+                    merged_tf = await self.advanced_ai.data_manager.get_merged_market_data(pair, timeframe, 1000)
+                    if merged_tf:
+                        quotes = [{
+                            'timestamp': q['timestamp'],
+                            'open': float(q['open']),
+                            'high': float(q['high']),
+                            'low': float(q['low']),
+                            'close': float(q['close']),
+                            'volume': float(q.get('volume', 0.0))
+                        } for q in merged_tf]
+                except Exception as e:
+                    logger.warning(f"Фоллбек данных для обучения не удался: {e}")
+
+            if len(quotes) < 160 and timeframe in ['15m','30m','1h','4h','1d']:
+                try:
+                    merged_1m = await self.advanced_ai.data_manager.get_merged_market_data(pair, '1m', 3000)
+                    if merged_1m:
+                        resampled = self._resample_to_timeframe(merged_1m, timeframe, pair)
+                        if resampled:
+                            quotes = resampled
+                except Exception as e:
+                    logger.warning(f"Ресемплинг 1m не удался: {e}")
+
+            if len(quotes) < 160 and timeframe in ['15m','30m','1h','4h']:
+                try:
+                    merged_5m = await self.advanced_ai.data_manager.get_merged_market_data(pair, '5m', 2000)
+                    if merged_5m:
+                        resampled = self._resample_to_timeframe(merged_5m, timeframe, pair)
+                        if resampled:
+                            quotes = resampled
+                except Exception as e:
+                    logger.warning(f"Ресемплинг 5m не удался: {e}")
+
+            if len(quotes) < 60:
                 await update.message.reply_text("❌ *Ошибка:* Недостаточно данных для обучения", parse_mode='Markdown')
                 return
             
-            # Обучаем модель
-            success = self.ml_model.train(quotes)
+            try:
+                prepared = []
+                for q in quotes:
+                    ts = q['timestamp']
+                    if isinstance(ts, str):
+                        try:
+                            ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        except Exception:
+                            ts = datetime.utcnow()
+                    prepared.append({
+                        'timestamp': ts,
+                        'open': q['open'],
+                        'high': q['high'],
+                        'low': q['low'],
+                        'close': q['close'],
+                        'volume': q.get('volume', 0.0)
+                    })
+                self.save_quotes(pair, timeframe, prepared)
+            except Exception:
+                pass
             
-            if success:
+            # Обучаем простую модель
+            success_simple = self.ml_model.train(quotes)
+
+            # Дополнительно обучаем улучшенную ансамблевую модель
+            adv_success = False
+            try:
+                adv_data = {
+                    pair: [
+                        {
+                            'timestamp': q['timestamp'],
+                            'open': q['open'],
+                            'high': q['high'],
+                            'low': q['low'],
+                            'close': q['close'],
+                            'volume': q.get('volume', 0.0),
+                            'pair': pair,
+                            'timeframe': timeframe
+                        } for q in quotes
+                    ]
+                }
+                res = self.advanced_ai.train_improved(adv_data, timeframe)
+                adv_success = bool(res.get('trained')) and res.get('samples', 0) > 0
+                if adv_success:
+                    self.advanced_ai.save_models()
+            except Exception as e:
+                logger.warning(f"Не удалось обучить улучшенную модель: {e}")
+
+            if success_simple or adv_success:
+                details = []
+                if success_simple:
+                    details.append("SimpleML: ✅")
+                else:
+                    details.append("SimpleML: ❌")
+                if adv_success:
+                    details.append("AdvancedAI: ✅")
+                else:
+                    details.append("AdvancedAI: ❌")
                 await update.message.reply_text(
-                    f"✅ *Модель успешно обучена!*\n"
-                    f"📊 *Данных использовано:* {len(quotes)} свечей\n"
-                    f"⏰ *Период:* {timeframe}",
+                    f"✅ *Обучение завершено*\n"
+                    f"📊 *Свечей:* {len(quotes)}\n"
+                    f"⏰ *Период:* {timeframe}\n"
+                    f"🧠 {' | '.join(details)}",
                     parse_mode='Markdown'
                 )
             else:
@@ -1760,7 +1947,12 @@ class ForexBot:
 • Риск от депозита: {evaluation['risk_percentage']:.2f}%
 • Оценка качества: {evaluation['score']}/10
 • Ожидаемая доходность (EV): {evaluation.get('expected_value', 0):.2f}%
-"""
+            """
+
+            if evaluation.get('adjusted'):
+                response += f"\n🔧 *Рекомендуемые уровни:*\n"
+                response += f"• SL: {evaluation['adjusted_stop_loss']:.5f} | TP: {evaluation['adjusted_take_profit']:.5f}\n"
+                response += f"• Обновлённое R:R ≥ {self.ai_assistant.risk_levels[signal_data['risk_level']]['min_rr_ratio']}:1\n"
             
             # Добавляем информацию о мультитаймфрейме
             if 'mtf_trend' in market_analysis:
@@ -2015,7 +2207,23 @@ Advanced ML Stats:
             interval = interval_map.get(timeframe, '1d')
             hist = ticker.history(period=period, interval=interval)
             if hist.empty:
-                logger.error(f"Нет данных для {yahoo_pair}")
+                try:
+                    import asyncio
+                    merged = asyncio.run(self.advanced_ai.data_manager.get_merged_market_data(pair, timeframe, limit))
+                    if merged:
+                        quotes = [{
+                            'timestamp': q['timestamp'],
+                            'open': float(q['open']),
+                            'high': float(q['high']),
+                            'low': float(q['low']),
+                            'close': float(q['close']),
+                            'volume': float(q.get('volume', 0.0))
+                        } for q in merged]
+                        self.db.save_quotes(pair, timeframe, quotes)
+                        self.quotes_cache[key] = {'time': now, 'quotes': quotes}
+                        return quotes[-limit:]
+                except Exception as e:
+                    logger.error(f"Нет данных для {yahoo_pair} и фоллбек не сработал: {e}")
                 return []
             quotes = []
             for index, row in hist.iterrows():
@@ -2027,6 +2235,21 @@ Advanced ML Stats:
                     'close': float(row['Close']),
                     'volume': int(row['Volume'])
                 })
+            if len(quotes) < limit:
+                try:
+                    import asyncio
+                    merged = asyncio.run(self.advanced_ai.data_manager.get_merged_market_data(pair, timeframe, limit))
+                    if merged:
+                        quotes = [{
+                            'timestamp': q['timestamp'],
+                            'open': float(q['open']),
+                            'high': float(q['high']),
+                            'low': float(q['low']),
+                            'close': float(q['close']),
+                            'volume': float(q.get('volume', 0.0))
+                        } for q in merged]
+                except Exception as e:
+                    logger.warning(f"Фоллбек источников данных не удался: {e}")
             self.db.save_quotes(pair, timeframe, quotes)
             self.quotes_cache[key] = {'time': now, 'quotes': quotes}
             return quotes[-limit:]
