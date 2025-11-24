@@ -7,12 +7,48 @@ from ..utils.env import load_env
 
 API_URL = "http://127.0.0.1:8000"
 
+def _map_action(a: str) -> str:
+    if a == "buy":
+        return "Покупка"
+    if a == "sell":
+        return "Продажа"
+    return "Наблюдать"
+
+def _explain_indicators(rsi: float, adx: float) -> str:
+    tips = []
+    if adx >= 25:
+        tips.append("Тренд сильный — работаем по направлению сигнала")
+    else:
+        tips.append("Тренд слабый — ждём подтверждения, учитываем диапазон")
+    if rsi >= 70:
+        tips.append("RSI>70: перекупленность — частичный вход или откат")
+    elif rsi <= 30:
+        tips.append("RSI<30: перепроданность — частичный вход или откат")
+    else:
+        tips.append("RSI нейтральный — ориентир по уровню и структуре")
+    return "\n".join([f"• {t}" for t in tips])
+
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "XAU/USD"
     tf = context.args[1] if len(context.args)>1 else "15m"
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500}) as r:
-            await update.message.reply_text(str(await r.json()))
+            d = await r.json()
+            act = d.get("action","hold")
+            size = d.get("size","-")
+            sl = d.get("sl","-")
+            tp = d.get("tp","-")
+            inds = d.get("explanation",{}).get("indicators",{})
+            rsi = float(inds.get("rsi", 50))
+            adx = float(inds.get("adx", 20))
+            msg = []
+            msg.append(f"📊 {pair} {tf}")
+            msg.append(f"Сигнал: {_map_action(act)}")
+            msg.append(f"Размер позиции: {size}")
+            msg.append(f"Уровни: SL {sl} | TP {tp}")
+            msg.append(f"Индикаторы: RSI {rsi:.1f} | ADX {adx:.1f}")
+            msg.append(_explain_indicators(rsi, adx))
+            await update.message.reply_text("\n".join(msg))
 
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "XAU/USD"
@@ -42,13 +78,19 @@ async def cmd_aitrader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf}) as r:
             d = await r.json()
-        act = d.get('action','-')
-        sl = d.get('sl','-')
-        tp = d.get('tp','-')
-        rsi = d.get('rsi','-')
-        adx = d.get('adx','-')
-        msg = f"🤖 {pair} {tf}\nДействие: {act}\nSL: {sl}\nTP: {tp}\nRSI: {rsi}\nADX: {adx}\n\nСовет: при ADX>25 тренд надёжнее, при RSI>70 осторожно с покупкой, при RSI<30 осторожно с продажей. Размер позиции адаптируйте к ATR."
-        await update.message.reply_text(msg)
+            act = d.get('action','hold')
+            sl = d.get('sl','-')
+            tp = d.get('tp','-')
+            rsi = float(d.get('rsi',50))
+            adx = float(d.get('adx',20))
+            msg = []
+            msg.append(f"🤖 {pair} {tf}")
+            msg.append(f"Сигнал: {_map_action(act)}")
+            msg.append(f"Уровни: SL {sl} | TP {tp}")
+            msg.append(f"Индикаторы: RSI {rsi:.1f} | ADX {adx:.1f}")
+            msg.append(_explain_indicators(rsi, adx))
+            msg.append("Риск: ≤1% на сделку, размер позиции адаптируйте к ATR")
+            await update.message.reply_text("\n".join(msg))
     await update.message.reply_text("Напишите вопрос по сделке или рынку — отвечу как трейдер.")
     context.user_data['ait_pair'] = pair
     context.user_data['ait_tf'] = tf
@@ -158,10 +200,24 @@ async def analyse_pick_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     tf = q.data
     pair = context.user_data.get('pair', 'EUR/USD')
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500})
-        await q.edit_message_text(f"{pair} {tf} анализ загружен")
-        await q.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        r = await session.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500})
+        d = await r.json()
+        act = d.get("action","hold")
+        size = d.get("size","-")
+        sl = d.get("sl","-")
+        tp = d.get("tp","-")
+        inds = d.get("explanation",{}).get("indicators",{})
+        rsi = float(inds.get("rsi", 50))
+        adx = float(inds.get("adx", 20))
+        await q.edit_message_text(f"{pair} {tf} — анализ готов")
+        msg = []
+        msg.append(f"Сигнал: {_map_action(act)}")
+        msg.append(f"Размер позиции: {size}")
+        msg.append(f"Уровни: SL {sl} | TP {tp}")
+        msg.append(f"Индикаторы: RSI {rsi:.1f} | ADX {adx:.1f}")
+        msg.append(_explain_indicators(rsi, adx))
+        await q.message.reply_text("\n".join(msg))
     return ConversationHandler.END
 
 def add_analyse_menu(app):
