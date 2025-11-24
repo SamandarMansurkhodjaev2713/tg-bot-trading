@@ -1,6 +1,6 @@
 import os
-from telegram import Update, BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, CallbackQueryHandler
 import asyncio
 import httpx
 from ..utils.env import load_env
@@ -34,7 +34,55 @@ async def cmd_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(str(r.json()))
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот готов. Команды: /analyze <pair> <tf>, /news <pair> <hours>, /backtest <pair> <tf>, /train <tf>.")
+    await update.message.reply_text("✅ Бот готов!\n\nКоманды:\n/analyze <pair> <tf>\n/news <pair> <hours>\n/backtest <pair> <tf>\n/train <tf>\n/aitrader <pair> <tf>\n/aitrain <tf>")
+
+async def cmd_aitrader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pair = context.args[0] if context.args else "EUR/USD"
+    tf = context.args[1] if len(context.args)>1 else "15m"
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf})
+        d = r.json()
+        act = d.get('action','-')
+        sl = d.get('sl','-')
+        tp = d.get('tp','-')
+        rsi = d.get('rsi','-')
+        adx = d.get('adx','-')
+        msg = f"🤖 {pair} {tf}\nДействие: {act}\nSL: {sl}\nTP: {tp}\nRSI: {rsi}\nADX: {adx}\n\nСовет: при ADX>25 тренд надёжнее, при RSI>70 осторожно с покупкой, при RSI<30 осторожно с продажей. Размер позиции адаптируйте к ATR."
+        await update.message.reply_text(msg)
+
+async def cmd_aitrain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tf = context.args[0] if context.args else "15m"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(f"{API_URL}/ai/train", json=["EUR/USD","GBP/USD","USD/JPY","XAU/USD"], params={"tf": tf})
+        await update.message.reply_text(str(r.json()))
+
+async def cmd_expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pair = context.args[0] if context.args else "EUR/USD"
+    tf = context.args[1] if len(context.args)>1 else "15m"
+    question = " ".join(context.args[2:]) if len(context.args)>2 else ""
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf})
+        d = r.json()
+        act = d.get('action','hold')
+        sl = d.get('sl','-')
+        tp = d.get('tp','-')
+        rsi = d.get('rsi',50)
+        adx = d.get('adx',20)
+        guidance = []
+        guidance.append(f"Сигнал: {act.upper()} | RSI {rsi:.1f} | ADX {adx:.1f}")
+        if adx >= 25:
+            guidance.append("Тренд силён, работать по направлению сигнала.")
+        else:
+            guidance.append("Тренд слабый, учитывай боковик и ложные пробои.")
+        if rsi >= 70:
+            guidance.append("Перекупленность: ищи откат перед покупками.")
+        elif rsi <= 30:
+            guidance.append("Перепроданность: ищи откат перед продажами.")
+        guidance.append(f"Уровни: SL {sl} | TP {tp}")
+        if question:
+            guidance.append(f"Вопрос: {question}")
+            guidance.append("Ответ: соблюдай риск 1% на сделку, позицию адаптируй к ATR; избегай торговли за 30 минут до/после важных новостей.")
+        await update.message.reply_text("\n".join(guidance))
 
 async def run_bot():
     load_env()
@@ -45,6 +93,10 @@ async def run_bot():
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("train", cmd_train))
+    app.add_handler(CommandHandler("aitrader", cmd_aitrader))
+    app.add_handler(CommandHandler("aitrain", cmd_aitrain))
+    app.add_handler(CommandHandler("expert", cmd_expert))
+    add_analyse_menu(app)
     await app.initialize()
     await app.bot.set_my_commands([
         BotCommand("start", "Приветствие и список команд"),
@@ -52,5 +104,50 @@ async def run_bot():
         BotCommand("news", "Сводка новостей по паре"),
         BotCommand("backtest", "Бэктест и метрики"),
         BotCommand("train", "Обучение моделей по TF"),
+        BotCommand("aitrader", "ИИ сигнал и совет"),
+        BotCommand("aitrain", "Обучение ИИ моделей"),
+        BotCommand("analyse", "Меню выбора пары и TF"),
     ])
     await app.run_polling()
+
+SELECT_PAIR, SELECT_TF = range(2)
+
+async def analyse_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pairs = [
+        [InlineKeyboardButton("EUR/USD", callback_data="EUR/USD"), InlineKeyboardButton("GBP/USD", callback_data="GBP/USD")],
+        [InlineKeyboardButton("USD/JPY", callback_data="USD/JPY"), InlineKeyboardButton("XAU/USD", callback_data="XAU/USD")],
+        [InlineKeyboardButton("AUD/USD", callback_data="AUD/USD"), InlineKeyboardButton("NZD/USD", callback_data="NZD/USD")]
+    ]
+    await update.message.reply_text("Выберите пару:", reply_markup=InlineKeyboardMarkup(pairs))
+    return SELECT_PAIR
+
+async def analyse_pick_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data['pair'] = q.data
+    tfs = [[InlineKeyboardButton(x, callback_data=x) for x in ["15m","1h","4h","1d"]]]
+    await q.edit_message_text("Выберите таймфрейм:")
+    await q.message.reply_text("Таймфрейм:", reply_markup=InlineKeyboardMarkup(tfs))
+    return SELECT_TF
+
+async def analyse_pick_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tf = q.data
+    pair = context.user_data.get('pair', 'EUR/USD')
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500})
+        await q.edit_message_text(f"{pair} {tf} анализ загружен")
+        await q.message.reply_text(str(r.json()))
+    return ConversationHandler.END
+
+def add_analyse_menu(app):
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("analyse", analyse_start)],
+        states={
+            SELECT_PAIR: [CallbackQueryHandler(analyse_pick_pair)],
+            SELECT_TF: [CallbackQueryHandler(analyse_pick_tf)],
+        },
+        fallbacks=[]
+    )
+    app.add_handler(conv)
