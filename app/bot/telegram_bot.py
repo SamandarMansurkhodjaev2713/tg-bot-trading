@@ -1,8 +1,8 @@
 import os
 from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, CallbackQueryHandler, MessageHandler, filters
 import asyncio
-import httpx
+import aiohttp
 from ..utils.env import load_env
 
 API_URL = "http://127.0.0.1:8000"
@@ -10,28 +10,28 @@ API_URL = "http://127.0.0.1:8000"
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "XAU/USD"
     tf = context.args[1] if len(context.args)>1 else "15m"
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500})
-        await update.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/analyze", params={"pair": pair, "tf": tf, "window": 500}) as r:
+            await update.message.reply_text(str(await r.json()))
 
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "XAU/USD"
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/news", params={"pair": pair, "hours": 24})
-        await update.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/news", params={"pair": pair, "hours": 24}) as r:
+            await update.message.reply_text(str(await r.json()))
 
 async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "XAU/USD"
     tf = context.args[1] if len(context.args)>1 else "15m"
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/backtest", params={"pair": pair, "tf": tf, "start": "", "end": ""})
-        await update.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/backtest", params={"pair": pair, "tf": tf, "start": "", "end": ""}) as r:
+            await update.message.reply_text(str(await r.json()))
 
 async def cmd_train(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tf = context.args[0] if context.args else "15m"
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(f"{API_URL}/train", params={"tf": tf})
-        await update.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/train", params={"tf": tf}) as r:
+            await update.message.reply_text(str(await r.json()))
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Бот готов!\n\nКоманды:\n/analyze <pair> <tf>\n/news <pair> <hours>\n/backtest <pair> <tf>\n/train <tf>\n/aitrader <pair> <tf>\n/aitrain <tf>")
@@ -39,9 +39,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_aitrader(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "EUR/USD"
     tf = context.args[1] if len(context.args)>1 else "15m"
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf})
-        d = r.json()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf}) as r:
+            d = await r.json()
         act = d.get('action','-')
         sl = d.get('sl','-')
         tp = d.get('tp','-')
@@ -49,20 +49,24 @@ async def cmd_aitrader(update: Update, context: ContextTypes.DEFAULT_TYPE):
         adx = d.get('adx','-')
         msg = f"🤖 {pair} {tf}\nДействие: {act}\nSL: {sl}\nTP: {tp}\nRSI: {rsi}\nADX: {adx}\n\nСовет: при ADX>25 тренд надёжнее, при RSI>70 осторожно с покупкой, при RSI<30 осторожно с продажей. Размер позиции адаптируйте к ATR."
         await update.message.reply_text(msg)
+    await update.message.reply_text("Напишите вопрос по сделке или рынку — отвечу как трейдер.")
+    context.user_data['ait_pair'] = pair
+    context.user_data['ait_tf'] = tf
+    return AIT_CHAT
 
 async def cmd_aitrain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tf = context.args[0] if context.args else "15m"
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(f"{API_URL}/ai/train", json=["EUR/USD","GBP/USD","USD/JPY","XAU/USD"], params={"tf": tf})
-        await update.message.reply_text(str(r.json()))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/ai/train", json=["EUR/USD","GBP/USD","USD/JPY","XAU/USD"], params={"tf": tf}) as r:
+            await update.message.reply_text(str(await r.json()))
 
 async def cmd_expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair = context.args[0] if context.args else "EUR/USD"
     tf = context.args[1] if len(context.args)>1 else "15m"
     question = " ".join(context.args[2:]) if len(context.args)>2 else ""
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf})
-        d = r.json()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/ai/predict", params={"pair": pair, "tf": tf}) as r:
+            d = await r.json()
         act = d.get('action','hold')
         sl = d.get('sl','-')
         tp = d.get('tp','-')
@@ -84,6 +88,18 @@ async def cmd_expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
             guidance.append("Ответ: соблюдай риск 1% на сделку, позицию адаптируй к ATR; избегай торговли за 30 минут до/после важных новостей.")
         await update.message.reply_text("\n".join(guidance))
 
+AIT_CHAT = 100
+async def aitrader_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.message.text
+    pair = context.user_data.get('ait_pair', 'EUR/USD')
+    tf = context.user_data.get('ait_tf', '15m')
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/ai/chat", params={"pair": pair, "tf": tf, "question": q}) as r:
+            d = await r.json()
+        txt = d.get('answer','')
+        await update.message.reply_text(txt or "Готово.")
+    return AIT_CHAT
+
 async def run_bot():
     load_env()
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -93,7 +109,14 @@ async def run_bot():
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("train", cmd_train))
-    app.add_handler(CommandHandler("aitrader", cmd_aitrader))
+    conv2 = ConversationHandler(
+        entry_points=[CommandHandler("aitrader", cmd_aitrader)],
+        states={
+            AIT_CHAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, aitrader_chat)],
+        },
+        fallbacks=[]
+    )
+    app.add_handler(conv2)
     app.add_handler(CommandHandler("aitrain", cmd_aitrain))
     app.add_handler(CommandHandler("expert", cmd_expert))
     add_analyse_menu(app)

@@ -30,7 +30,8 @@ async def _get_df_multi(pair: str, tf: str, limit: int) -> pd.DataFrame:
     load_env()
     cfg = {
         'alphavantage_api_key': os.getenv('ALPHAVANTAGE_API_KEY', ''),
-        'histdata_path': os.getenv('HISTDATA_PATH', 'data/histdata')
+        'histdata_path': os.getenv('HISTDATA_PATH', 'data/histdata'),
+        'truefx_path': os.getenv('TRUEFX_PATH', 'data/truefx')
     }
     dm = DataManager(cfg)
     data = await dm.get_merged_market_data(pair, tf, limit)

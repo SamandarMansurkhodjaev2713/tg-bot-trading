@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+import os
 
 @dataclass
 class MarketData:
@@ -497,6 +498,43 @@ class HistDataLocalSource(DataSource):
     async def stop_realtime_stream(self):
         return
 
+class TrueFXDataSource(DataSource):
+    def __init__(self, base_path: str = 'data/truefx'):
+        self.base_path = base_path
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            fname = os.path.join(self.base_path, f"{pair.replace('/','')}_{timeframe}.csv")
+            if not os.path.exists(fname):
+                return []
+            df = pd.read_csv(fname)
+            cols = { 'Timestamp':'timestamp','Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume' }
+            df = df.rename(columns=cols)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.dropna()
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+            quotes = []
+            for _, row in df.iterrows():
+                ts = row['timestamp'] if isinstance(row['timestamp'], datetime) else pd.to_datetime(row['timestamp'])
+                quotes.append({
+                    'timestamp': ts.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0.0)),
+                    'pair': pair,
+                    'timeframe': timeframe
+                })
+            return quotes
+        except Exception as e:
+            print(f"Error reading TrueFX local file: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
 class KaikoDataSource(DataSource):
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -715,6 +753,10 @@ class DataManager:
         
         # HistData local
         self.sources['histdata'] = HistDataLocalSource(self.config.get('histdata_path', 'data/histdata'))
+
+        # TrueFX local
+        if self.config.get('truefx_path'):
+            self.sources['truefx'] = TrueFXDataSource(self.config.get('truefx_path'))
         
         # Kaiko
         if self.config.get('kaiko_api_key'):
@@ -823,6 +865,8 @@ class DataManager:
         
         # Forex pairs
         if any(currency in pair_upper for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD']):
+            if 'truefx' in self.sources:
+                return 'truefx'
             if pair_upper in ['EURUSD','GBPUSD'] and 'histdata' in self.sources:
                 return 'histdata'
             return 'yahoo' if 'yahoo' in self.sources else 'stooq'
@@ -842,7 +886,7 @@ class DataManager:
             if not primary and 'yahoo' in self.sources:
                 primary = await self.sources['yahoo'].get_historical_data(pair, timeframe, limit)
             backups = []
-            for src in ['stooq','alphavantage']:
+            for src in ['truefx','stooq','alphavantage']:
                 if src in self.sources:
                     d = await self.sources[src].get_historical_data(pair, timeframe, limit)
                     if d:
