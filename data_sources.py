@@ -3,6 +3,8 @@ import json
 import sqlite3
 import requests
 import yfinance as yf
+import os
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Callable, Any
 from binance import AsyncClient, BinanceSocketManager
@@ -229,19 +231,17 @@ class YahooFinanceDataSource(DataSource):
             # Map pair to Yahoo Finance symbol
             symbol = self.pair_map.get(pair, pair)
             
-            # Determine period based on timeframe and limit
-            period_map = {
-                '1m': f'{limit}m',
-                '5m': f'{limit * 5}m',
-                '15m': f'{limit * 15}m',
-                '30m': f'{limit * 30}m',
-                '1h': f'{limit}h',
-                '4h': f'{limit * 4}h',
-                '1d': f'{limit}d',
-                '1w': f'{limit * 7}d'
-            }
-            
-            period = period_map.get(timeframe, f'{limit}d')
+            days = 5
+            if timeframe in ['1m','5m','15m','30m','1h','4h']:
+                if timeframe == '1m': days = min(7, max(1, int(limit/60/24))) or 1
+                elif timeframe == '5m': days = min(30, max(1, int(limit/12/24))) or 7
+                elif timeframe == '15m': days = min(60, max(1, int(limit/4/24))) or 7
+                elif timeframe == '30m': days = min(60, max(1, int(limit/2/24))) or 7
+                elif timeframe == '1h': days = min(30, max(1, int(limit/24))) or 7
+                elif timeframe == '4h': days = min(60, max(1, int(limit/6))) or 30
+            else:
+                days = min(3650, max(1, int(limit)))
+            period = f'{days}d'
             
             # Get data
             ticker = yf.Ticker(symbol)
@@ -341,6 +341,176 @@ class YahooFinanceDataSource(DataSource):
         
         self.streams.clear()
         print("Yahoo Finance streams stopped")
+
+class StooqDataSource(DataSource):
+    def __init__(self):
+        self.base_url = "https://stooq.com/q/d/l/"
+        self.symbol_map = {
+            'EURUSD': 'eurusd',
+            'GBPUSD': 'gbpusd',
+            'XAUUSD': 'xauusd',
+            'USOIL': 'wtic',
+            'AAPL': 'aapl.us',
+        }
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            s = self.symbol_map.get(pair, pair.lower())
+            i = 'd'
+            if timeframe in ['1h','4h']:
+                i = 'd'
+            params = { 's': s, 'i': i }
+            r = requests.get(self.base_url, params=params, timeout=10)
+            r.raise_for_status()
+            from io import StringIO
+            df = pd.read_csv(StringIO(r.text))
+            if 'Date' not in df.columns:
+                return []
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df.rename(columns={'Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume'})
+            df = df.dropna()
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+            quotes = []
+            for _, row in df.iterrows():
+                quotes.append({
+                    'timestamp': row['Date'].isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row['volume']) if 'volume' in df.columns else 0.0,
+                    'pair': pair,
+                    'timeframe': timeframe
+                })
+            return quotes
+        except Exception as e:
+            print(f"Error getting historical data from Stooq: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
+
+class AlphaVantageDataSource(DataSource):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.session = requests.Session()
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            if len(pair) <= 5 and pair.isalpha():
+                func = 'TIME_SERIES_INTRADAY'
+                interval = '60min' if timeframe in ['1h','4h'] else '15min'
+                url = 'https://www.alphavantage.co/query'
+                params = { 'function': func, 'symbol': pair, 'interval': interval, 'apikey': self.api_key, 'outputsize': 'compact' }
+                resp = self.session.get(url, params=params, timeout=10)
+                data = resp.json()
+                key = f"Time Series ({interval})"
+                series = data.get(key, {})
+                rows = list(series.items())
+                rows.sort(key=lambda x: x[0])
+                if limit:
+                    rows = rows[-limit:]
+                quotes = []
+                for ts, row in rows:
+                    quotes.append({
+                        'timestamp': datetime.fromisoformat(ts).isoformat(),
+                        'open': float(row['1. open']),
+                        'high': float(row['2. high']),
+                        'low': float(row['3. low']),
+                        'close': float(row['4. close']),
+                        'volume': float(row.get('5. volume', 0)),
+                        'pair': pair,
+                        'timeframe': timeframe
+                    })
+                return quotes
+            else:
+                func = 'FX_INTRADAY'
+                interval = '60min' if timeframe in ['1h','4h'] else '15min'
+                from_symbol = pair[:3]
+                to_symbol = pair[3:]
+                url = 'https://www.alphavantage.co/query'
+                params = { 'function': func, 'from_symbol': from_symbol, 'to_symbol': to_symbol, 'interval': interval, 'apikey': self.api_key } 
+                resp = self.session.get(url, params=params, timeout=10)
+                data = resp.json()
+                key = f"Time Series FX ({interval})"
+                series = data.get(key, {})
+                rows = list(series.items())
+                rows.sort(key=lambda x: x[0])
+                if limit:
+                    rows = rows[-limit:]
+                quotes = []
+                for ts, row in rows:
+                    quotes.append({
+                        'timestamp': datetime.fromisoformat(ts).isoformat(),
+                        'open': float(row['1. open']),
+                        'high': float(row['2. high']),
+                        'low': float(row['3. low']),
+                        'close': float(row['4. close']),
+                        'volume': 0.0,
+                        'pair': pair,
+                        'timeframe': timeframe
+                    })
+                return quotes
+        except Exception as e:
+            print(f"Error getting AlphaVantage data: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
+
+class HistDataLocalSource(DataSource):
+    def __init__(self, base_path: str = 'data/histdata'):
+        self.base_path = base_path
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            fname = os.path.join(self.base_path, f"{pair}_{timeframe}.csv")
+            if not os.path.exists(fname):
+                return []
+            df = pd.read_csv(fname)
+            cols = { 'Timestamp':'timestamp','Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume' }
+            df = df.rename(columns=cols)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.dropna()
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+            quotes = []
+            for _, row in df.iterrows():
+                ts = row['timestamp'] if isinstance(row['timestamp'], datetime) else pd.to_datetime(row['timestamp'])
+                quotes.append({
+                    'timestamp': ts.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row.get('volume', 0.0)),
+                    'pair': pair,
+                    'timeframe': timeframe
+                })
+            return quotes
+        except Exception as e:
+            print(f"Error reading HistData local file: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
+
+class KaikoDataSource(DataSource):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.session = requests.Session()
+    async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            return []
+        except Exception as e:
+            print(f"Error getting Kaiko data: {e}")
+            return []
+    async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
+        return
+    async def stop_realtime_stream(self):
+        return
 
 class TradingEconomicsDataSource:
     """Trading Economics data source for economic calendar and indicators"""
@@ -536,6 +706,20 @@ class DataManager:
         # Yahoo Finance for forex/stocks/commodities
         self.sources['yahoo'] = YahooFinanceDataSource()
         
+        # Stooq
+        self.sources['stooq'] = StooqDataSource()
+        
+        # AlphaVantage
+        if self.config.get('alphavantage_api_key'):
+            self.sources['alphavantage'] = AlphaVantageDataSource(self.config['alphavantage_api_key'])
+        
+        # HistData local
+        self.sources['histdata'] = HistDataLocalSource(self.config.get('histdata_path', 'data/histdata'))
+        
+        # Kaiko
+        if self.config.get('kaiko_api_key'):
+            self.sources['kaiko'] = KaikoDataSource(self.config['kaiko_api_key'])
+        
         # Trading Economics for economic calendar
         if self.config.get('trading_economics_api_key'):
             self.sources['trading_economics'] = TradingEconomicsDataSource(
@@ -631,18 +815,51 @@ class DataManager:
         
         # Crypto pairs
         if any(crypto in pair_upper for crypto in ['BTC', 'ETH', 'BNB', 'ADA', 'DOT']):
-            return 'binance' if 'binance' in self.sources else 'yahoo'
+            if 'binance' in self.sources:
+                return 'binance'
+            if 'kaiko' in self.sources:
+                return 'kaiko'
+            return 'yahoo'
         
         # Forex pairs
         if any(currency in pair_upper for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD']):
-            return 'yahoo'
+            if pair_upper in ['EURUSD','GBPUSD'] and 'histdata' in self.sources:
+                return 'histdata'
+            return 'yahoo' if 'yahoo' in self.sources else 'stooq'
         
         # Stock symbols
         if len(pair_upper) <= 5 and pair_upper.isalpha():
+            if 'alphavantage' in self.sources:
+                return 'alphavantage'
             return 'yahoo'
         
         # Default to Yahoo Finance
         return 'yahoo'
+
+    async def get_merged_market_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
+        try:
+            primary = await self.get_market_data(pair, timeframe, limit)
+            if not primary and 'yahoo' in self.sources:
+                primary = await self.sources['yahoo'].get_historical_data(pair, timeframe, limit)
+            backups = []
+            for src in ['stooq','alphavantage']:
+                if src in self.sources:
+                    d = await self.sources[src].get_historical_data(pair, timeframe, limit)
+                    if d:
+                        backups.extend(d)
+            by_time = {}
+            for q in backups:
+                by_time.setdefault(q['timestamp'], q)
+            merged = []
+            for q in primary:
+                t = q['timestamp']
+                if t in by_time and q.get('volume', 0) in [None, 0]:
+                    q['volume'] = by_time[t].get('volume', 0)
+                merged.append(q)
+            return merged if merged else primary
+        except Exception as e:
+            print(f"Error merging market data: {e}")
+            return []
     
     async def _store_market_data(self, data: List[Dict], source: str):
         """Store market data in database"""

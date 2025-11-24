@@ -2,6 +2,9 @@ import numpy as np
 import sqlite3
 import json
 import math
+import os
+import pandas as pd
+import asyncio
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -16,6 +19,16 @@ import pickle
 import os
 
 from forex_indicators import AdvancedTechnicalIndicators
+from data_sources import DataManager
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+except Exception:
+    torch = None
+    nn = None
+    optim = None
 
 class AdvancedTradingAI:
     """Advanced AI trading system with ensemble models, calibration, and meta-labeling"""
@@ -23,6 +36,7 @@ class AdvancedTradingAI:
     def __init__(self, db_path: str = "ai_trading_signals.db"):
         self.db_path = db_path
         self.indicators = AdvancedTechnicalIndicators()
+        self.data_manager = DataManager({})
         
         # Model components
         self.models = {}
@@ -48,6 +62,212 @@ class AdvancedTradingAI:
         
         # Load models if they exist
         self.load_models()
+
+    def build_unified_dataset(self, pairs: List[str], timeframe: str, limit: int = 1000) -> Dict[str, List[Dict]]:
+        result = {}
+        for p in pairs:
+            data = asyncio.run(self.data_manager.get_merged_market_data(p, timeframe, limit))
+            result[p] = self._clean_and_align(data, timeframe)
+        return result
+
+    def _clean_and_align(self, quotes: List[Dict], timeframe: str) -> List[Dict]:
+        if not quotes:
+            return []
+        df = pd.DataFrame(quotes)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+        df = df.dropna()
+        df = df.sort_values('timestamp')
+        df = df.set_index('timestamp')
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, utc=True, errors='coerce')
+        rule = {'1m':'1min','5m':'5min','15m':'15min','30m':'30min','1h':'1h','4h':'4h','1d':'1d'}.get(timeframe,'1h')
+        df = df.resample(rule).agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
+        r = df['close'].pct_change().fillna(0)
+        mad = np.median(np.abs(r - np.median(r))) if len(r) else 0
+        if mad > 0:
+            thr = 10 * mad
+            r = np.clip(r, -thr, thr)
+            df['close'] = df['close'].shift(1) * (1 + r)
+        df = df.dropna()
+        df['pair'] = quotes[0]['pair']
+        df['timeframe'] = timeframe
+        out = []
+        for idx, row in df.iterrows():
+            out.append({
+                'timestamp': idx.isoformat(),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row.get('volume', 0.0)),
+                'pair': row['pair'],
+                'timeframe': timeframe
+            })
+        return out
+
+    def extract_multi_timeframe_features(self, quotes: List[Dict], pair: str) -> Dict[str, float]:
+        feats = {}
+        base = self.extract_advanced_features(quotes, pair)
+        feats.update({f"{k}": v for k, v in base.items()})
+        df = pd.DataFrame(quotes)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp')
+        for tf, rule in [('15m','15min'),('1h','1h'),('4h','4h')]:
+            rdf = df.resample(rule).agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
+            qs = []
+            for idx, row in rdf.tail(120).iterrows():
+                qs.append({'timestamp': idx.isoformat(), 'open': float(row['open']), 'high': float(row['high']), 'low': float(row['low']), 'close': float(row['close']), 'volume': float(row.get('volume',0))})
+            f = self.extract_advanced_features(qs, pair)
+            for k, v in f.items():
+                feats[f"{tf}_{k}"] = v
+        return feats
+
+    def extract_correlation_features(self, main_pair: str, main_quotes: List[Dict], other_data: Dict[str, List[Dict]]) -> Dict[str, float]:
+        feats = {}
+        mr = pd.Series([q['close'] for q in main_quotes]).pct_change().dropna()
+        for op, oq in other_data.items():
+            if not oq:
+                continue
+            orr = pd.Series([q['close'] for q in oq]).pct_change().dropna()
+            n = min(len(mr), len(orr))
+            if n < 20:
+                continue
+            c = float(pd.Series(mr.tail(n)).corr(pd.Series(orr.tail(n))))
+            feats[f"corr_{op}"] = c
+        return feats
+
+    def balance_training(self, X: List[Dict[str, float]], y: List[int]) -> Tuple[List[Dict[str,float]], List[int]]:
+        pos = [(xi, yi) for xi, yi in zip(X, y) if yi == 1]
+        neg = [(xi, yi) for xi, yi in zip(X, y) if yi == -1]
+        neu = [(xi, yi) for xi, yi in zip(X, y) if yi == 0]
+        m = min(len(pos), len(neg), max(1, len(neu)))
+        balanced = pos[:m] + neg[:m] + neu[:m]
+        Xb = [b[0] for b in balanced]
+        yb = [b[1] for b in balanced]
+        return Xb, yb
+
+    def train_improved(self, data: Dict[str, List[Dict]], timeframe: str = '1h') -> Dict[str, Any]:
+        features = []
+        labels = []
+        for pair, quotes in data.items():
+            if len(quotes) < 150:
+                continue
+            closes = pd.Series([q['close'] for q in quotes])
+            for i in range(120, len(quotes)-1):
+                window = quotes[:i+1]
+                f = self.extract_multi_timeframe_features(window, pair)
+                features.append(f)
+                ch = float(closes.pct_change().iloc[i+1])
+                if ch > 0.0002:
+                    labels.append(1)
+                elif ch < -0.0002:
+                    labels.append(-1)
+                else:
+                    labels.append(0)
+        if not features:
+            return {'trained': False, 'samples': 0, 'tcn_used': False}
+        Xb, yb = self.balance_training(features, labels)
+        self._train_models(Xb, yb)
+        tcn_used = self.train_tcn_optional(Xb, yb)
+        return {'trained': True, 'samples': len(Xb), 'tcn_used': tcn_used}
+
+    def predict_enhanced(self, quotes: List[Dict], pair: str) -> Dict[str, Any]:
+        f = self.extract_multi_timeframe_features(quotes, pair)
+        s, p, c = self.predict(f, use_calibration=False)
+        vol = float(np.std(pd.Series([q['close'] for q in quotes]).pct_change().dropna().tail(50))) if len(quotes) > 50 else 0.0
+        return {'direction': 'up' if s == 1 else 'down' if s == -1 else 'flat', 'probability': p, 'confidence': c, 'volatility': vol}
+
+    def train_tcn_optional(self, features_list: List[Dict[str,float]], labels: List[int]) -> bool:
+        if torch is None:
+            return False
+        fn = sorted(list({k for f in features_list for k in f.keys()}))
+        X = np.array([[f.get(k,0.0) for k in fn] for f in features_list], dtype=np.float32)
+        y = np.array([1 if yy==1 else 0 for yy in labels], dtype=np.int64)
+        X = torch.tensor(X).unsqueeze(1)
+        y = torch.tensor(y)
+        class SimpleTCN(nn.Module):
+            def __init__(self, n_features):
+                super().__init__()
+                self.conv1 = nn.Conv1d(1, 8, kernel_size=3, padding=1)
+                self.conv2 = nn.Conv1d(8, 16, kernel_size=3, padding=1)
+                self.fc = nn.Linear(n_features*16, 2)
+            def forward(self, x):
+                x = torch.relu(self.conv1(x))
+                x = torch.relu(self.conv2(x))
+                x = x.view(x.size(0), -1)
+                return self.fc(x)
+        model = SimpleTCN(X.shape[-1])
+        opt = optim.Adam(model.parameters(), lr=1e-3)
+        loss_fn = nn.CrossEntropyLoss()
+        for _ in range(5):
+            opt.zero_grad()
+            out = model(X)
+            loss = loss_fn(out, y)
+            loss.backward()
+            opt.step()
+        return True
+
+    def run_full_pipeline(self, pairs: List[str], timeframe: str = '1h', limit: int = 1000) -> Dict[str, Any]:
+        data = self.build_unified_dataset(pairs, timeframe, limit)
+        train_res = self.train_improved(data, timeframe)
+        preds = {}
+        for p in pairs:
+            q = data.get(p, [])
+            if q:
+                preds[p] = self.predict_enhanced(q, p)
+        # Baseline vs Improved CV
+        base_feats, base_labels = self._build_samples(data, use_mtf=False)
+        mtf_feats, mtf_labels = self._build_samples(data, use_mtf=True)
+        baseline = self._time_series_cv_metrics(base_feats, base_labels)
+        improved = self._time_series_cv_metrics(mtf_feats, mtf_labels)
+        return {'train': train_res, 'predictions': preds, 'baseline_cv': baseline, 'improved_cv': improved}
+
+    def _build_samples(self, data: Dict[str, List[Dict]], use_mtf: bool) -> Tuple[List[Dict[str,float]], List[int]]:
+        features = []
+        labels = []
+        for pair, quotes in data.items():
+            if len(quotes) < 160:
+                continue
+            closes = pd.Series([q['close'] for q in quotes])
+            for i in range(120, len(quotes)-1):
+                window = quotes[:i+1]
+                f = self.extract_multi_timeframe_features(window, pair) if use_mtf else self.extract_advanced_features(window, pair)
+                features.append(f)
+                ch = float(closes.pct_change().iloc[i+1])
+                if ch > 0.0002:
+                    labels.append(1)
+                elif ch < -0.0002:
+                    labels.append(-1)
+                else:
+                    labels.append(0)
+        return features, labels
+
+    def _time_series_cv_metrics(self, features_list: List[Dict[str,float]], labels: List[int]) -> Dict[str, float]:
+        if not features_list or len(features_list) < 50:
+            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
+        X, feature_names = self._prepare_training_data(features_list)
+        y = np.array(labels)
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X)
+        tscv = TimeSeriesSplit(n_splits=3)
+        accs = []
+        precs = []
+        recs = []
+        f1s = []
+        clf = RandomForestClassifier(n_estimators=150, random_state=42)
+        for tr, te in tscv.split(Xs):
+            clf.fit(Xs[tr], y[tr])
+            pred = clf.predict(Xs[te])
+            accs.append(accuracy_score(y[te], pred))
+            precs.append(precision_score(y[te], pred, average='weighted', zero_division=0))
+            recs.append(recall_score(y[te], pred, average='weighted', zero_division=0))
+            f1s.append(f1_score(y[te], pred, average='weighted', zero_division=0))
+        return {
+            'accuracy': float(np.mean(accs)),
+            'precision': float(np.mean(precs)),
+            'recall': float(np.mean(recs)),
+            'f1': float(np.mean(f1s))
+        }
     
     def init_database(self):
         """Initialize SQLite database for signal tracking"""
@@ -626,21 +846,16 @@ class AdvancedTradingAI:
     def _train_calibration_models(self, X: np.ndarray, y: np.ndarray):
         """Train probability calibration models"""
         try:
-            # Isotonic calibration
             for name, model in self.models.items():
                 if hasattr(model, 'predict_proba'):
-                    proba = model.predict_proba(X)[:, 1] if model.classes_[1] == 1 else model.predict_proba(X)[:, 0]
-                    
-                    # Isotonic regression
+                    proba = model.predict_proba(X)
+                    if proba.ndim == 2 and proba.shape[1] > 1:
+                        p1 = proba[:, 1] if model.classes_[1] == 1 else proba[:, 0]
+                    else:
+                        p1 = proba.ravel()
                     iso_calibrator = IsotonicRegression(out_of_bounds='clip')
-                    iso_calibrator.fit(proba, y)
+                    iso_calibrator.fit(p1, y)
                     self.calibrators[f'{name}_isotonic'] = iso_calibrator
-                    
-                    # Platt scaling (sigmoid)
-                    sigmoid_calibrator = sigmoid.SigmoidCalibration()
-                    sigmoid_calibrator.fit(proba.reshape(-1, 1), y)
-                    self.calibrators[f'{name}_sigmoid'] = sigmoid_calibrator
-        
         except Exception as e:
             print(f"Error in calibration training: {e}")
     
@@ -760,16 +975,9 @@ class AdvancedTradingAI:
     def _calibrate_probability(self, probability: float, prediction: int) -> float:
         """Calibrate probability using isotonic regression"""
         try:
-            # Try isotonic calibration first
             if 'random_forest_isotonic' in self.calibrators:
                 calibrated = self.calibrators['random_forest_isotonic'].predict([probability])[0]
                 return max(0.0, min(1.0, calibrated))
-            
-            # Fallback to sigmoid calibration
-            elif 'random_forest_sigmoid' in self.calibrators:
-                calibrated = self.calibrators['random_forest_sigmoid'].predict([[probability]])[0][0]
-                return max(0.0, min(1.0, calibrated))
-                
         except Exception as e:
             print(f"Error in probability calibration: {e}")
         
