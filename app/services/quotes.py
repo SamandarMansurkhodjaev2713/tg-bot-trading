@@ -3,7 +3,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 
 PAIR_TICKERS = {
-    "XAU/USD": "XAUUSD=X",
+    "XAU/USD": "GC=F",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "USDJPY=X",

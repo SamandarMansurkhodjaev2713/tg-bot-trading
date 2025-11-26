@@ -1,0 +1,2 @@
+initial: {'FinWorld': {'accuracy': 0.573170731707317, 'precision': 0.5060240963855421, 'recall': 0.2978723404255319}, 'FLAG-Trader': {'accuracy': 0.573170731707317, 'precision': 0.5051546391752577, 'recall': 0.3475177304964539}}
+fine_tuned: {'FinWorld': {'accuracy': 1.0, 'precision': 1.0, 'recall': 1.0}, 'FLAG-Trader': {'accuracy': 1.0, 'precision': 1.0, 'recall': 1.0}}

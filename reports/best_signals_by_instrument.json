@@ -1,0 +1,88 @@
+{
+  "EURUSD_15m.csv": {
+    "cfg": {
+      "prob_thr": 0.95,
+      "exp_thr": 0.0005,
+      "tp_mult": 2.8,
+      "sl_mult": 1.2,
+      "step": 1,
+      "sentiment_coef": 0.12,
+      "sentiment_filter": 0.3,
+      "rr_min": 2.5,
+      "adx_min": 25,
+      "news_window": 180,
+      "news_window_high": 240,
+      "vol_high_thr": 0.025,
+      "bb_macd_confirm": false
+    },
+    "metrics": {
+      "total_trades": 6,
+      "win_rate": 1.0,
+      "profit_factor": "Infinity",
+      "total_return": 0.041142095967630486
+    }
+  },
+  "EURUSD_1h.csv": {
+    "cfg": {
+      "prob_thr": 0.97,
+      "exp_thr": 0.0005,
+      "tp_mult": 3.0,
+      "sl_mult": 1.1,
+      "step": 1,
+      "sentiment_coef": 0.1,
+      "sentiment_filter": 0.35,
+      "rr_min": 2.8,
+      "adx_min": 25,
+      "news_window": 180,
+      "news_window_high": 240,
+      "vol_high_thr": 0.025,
+      "bb_macd_confirm": true
+    },
+    "metrics": {
+      "source": "iterative_cycles",
+      "note": "calibrated from 6-cycle backtests"
+    }
+  },
+  "XAUUSD_15m.csv": {
+    "cfg": {
+      "prob_thr": 0.95,
+      "exp_thr": 0.0005,
+      "tp_mult": 2.8,
+      "sl_mult": 1.1,
+      "step": 1,
+      "sentiment_coef": 0.15,
+      "sentiment_filter": 0.32,
+      "rr_min": 2.5,
+      "adx_min": 25,
+      "news_window": 180,
+      "news_window_high": 240,
+      "vol_high_thr": 0.03,
+      "bb_macd_confirm": false
+    },
+    "metrics": {
+      "source": "iterative_cycles",
+      "note": "balanced risk-reward for gold"
+    }
+  },
+  "XAUUSD_1h.csv": {
+    "cfg": {
+      "prob_thr": 0.97,
+      "exp_thr": 0.0005,
+      "tp_mult": 3.0,
+      "sl_mult": 1.1,
+      "step": 1,
+      "sentiment_coef": 0.12,
+      "sentiment_filter": 0.35,
+      "rr_min": 2.8,
+      "adx_min": 25,
+      "news_window": 180,
+      "news_window_high": 240,
+      "vol_high_thr": 0.03,
+      "bb_macd_confirm": true
+    },
+    "metrics": {
+      "source": "iterative_cycles",
+      "note": "best stability from cycles"
+    }
+  }
+}

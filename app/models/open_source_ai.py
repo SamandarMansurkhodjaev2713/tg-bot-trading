@@ -22,6 +22,7 @@ def _label(df: pd.DataFrame) -> pd.Series:
 def _to_Xy(feats: pd.DataFrame) -> tuple:
     y = _label(feats)
     X = feats.drop(columns=[c for c in ["open","high","low","close","adj_close","volume"] if c in feats.columns])
+    X = X.select_dtypes(include=[np.number])
     X = X.replace([np.inf, -np.inf], np.nan).dropna()
     y = y.loc[X.index]
     return X, y
@@ -41,6 +42,14 @@ async def _get_df_multi(pair: str, tf: str, limit: int) -> pd.DataFrame:
     if not data:
         df = get_ohlc(pair, tf, limit)
         return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    df = pd.DataFrame(data)
+    if 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+        df = df.dropna(subset=['timestamp']).sort_values('timestamp').set_index('timestamp')
+    for c in ['open','high','low','close','volume']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna()
     return df
 
 def _synthetic_df(limit: int, tf: str) -> pd.DataFrame:

@@ -1,0 +1,2 @@
+timestamp,pair,direction,entry_price,stop_loss,take_profit,confidence,market_regime,sentiment
+2020-11-24T02:30:00+00:00,EURUSD_15M,long,1.18456,1.1840920000000001,1.1853399999999998,81.45,chop,0.0

@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2020-11-24T02:30:00+00:00",
+    "pair": "EURUSD_15M",
+    "direction": "long",
+    "entry_price": 1.18456,
+    "stop_loss": 1.1840920000000001,
+    "take_profit": 1.1853399999999998,
+    "confidence": 81.45,
+    "market_regime": "chop",
+    "sentiment": 0.0
+  }
+]

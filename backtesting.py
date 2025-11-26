@@ -261,7 +261,7 @@ class AdvancedBacktestingEngine:
                         
                     # Track excursions
                     favorable_pips = (real_entry_price - current_price) / (0.01 if 'JPY' in pair else 0.0001)
-                    adverse_pips = (current_high - real_entry_price) / (0.01 if 'JPY' in pair else 0.0001)
+                    adverse_pips = (float(current_data['high']) - real_entry_price) / (0.01 if 'JPY' in pair else 0.0001)
                 
                 max_favorable_excursion = max(max_favorable_excursion, favorable_pips)
                 max_adverse_excursion = max(max_adverse_excursion, adverse_pips)

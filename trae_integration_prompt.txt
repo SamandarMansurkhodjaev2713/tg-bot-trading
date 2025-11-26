@@ -1,0 +1,425 @@
+
+# 1) Файлы проекта (Trae создаёт их в /workspace/educational_ai_finance_project)
+# -------------------------
+
+@file.create path=/workspace/educational_ai_finance_project/README.md
+"""
+Educational AI Finance Project (for Trae)
+-----------------------------------------
+Цель: собрать указанные финансовые и on-chain датасеты, выполнить ETL, подготовить индикаторы,
+обучить/валидацию open-weight моделей (FinWorld, FinBloom-7B, FLAG-Trader) в учебном режиме
+(никаких реальных торгов, не подключаем брокеров).
+
+Переменные окружения (Trae должен безопасно заполнить):
+- FRED_API_KEY (если нужен)
+- TRADINGECONOMICS_KEY
+- GLASSNODE_API_KEY
+- COINMETRICS_API_KEY
+- DERIBIT_API_KEY / DERIBIT_API_SECRET (если нужно)
+- WHALEALERT_API_KEY
+- NASDAQ_DATA_LINK (Quandl) API key (если используешь платную выгрузку)
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/setup.py
+"""
+from setuptools import setup, find_packages
+
+setup(
+    name="educational_ai_finance_project",
+    version="1.0.0",
+    packages=find_packages(),
+    install_requires=[
+        "torch>=1.13",
+        "transformers>=4.30",
+        "datasets",
+        "pandas",
+        "numpy",
+        "scikit-learn",
+        "matplotlib",
+        "tqdm",
+        "accelerate",
+        "yfinance",
+        "requests",
+        "pyyaml",
+        "peft",
+        "trl",
+        "ccxt",  # только для чтения публичных market endpoints (не для торгов)
+    ],
+)
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/requirements.txt
+"""
+torch>=1.13
+transformers>=4.30
+datasets
+pandas
+numpy
+scikit-learn
+matplotlib
+tqdm
+accelerate
+yfinance
+requests
+pyyaml
+peft
+trl
+ccxt
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/etl.py
+"""
+ETL для указанных источников.
+Trae должен запускать этот скрипт после установки зависимостей.
+Все сетевые запросы используют плейсхолдеры для API_KEY, которые Trae должен заменить.
+Файлы сохраняются в /workspace/data/raw/ и /workspace/data/processed/
+"""
+
+import os
+import json
+import csv
+import zipfile
+import subprocess
+from pathlib import Path
+import requests
+import pandas as pd
+import yfinance as yf
+
+ROOT = Path("/workspace")
+RAW = ROOT / "data" / "raw"
+PROC = ROOT / "data" / "processed"
+RAW.mkdir(parents=True, exist_ok=True)
+PROC.mkdir(parents=True, exist_ok=True)
+
+def fetch_fred(series_id, dest_filename):
+    """Скачать daily/weekly series с FRED (CSV)."""
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    r = requests.get(url)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_ecb_sdw(series_endpoint, dest_filename):
+    """Пример: Trae подставит корректный endpoint для deposit facility rate."""
+    r = requests.get(series_endpoint)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_tradingeconomics_calendar(api_key, dest_filename):
+    url = f"https://api.tradingeconomics.com/calendar?c={api_key}"
+    r = requests.get(url)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_cftc_cot(year, dest_zip):
+    url = f"https://www.cftc.gov/files/dea/history/fut_disagg_xls_{year}.zip"
+    r = requests.get(url)
+    open(dest_zip, "wb").write(r.content)
+
+def fetch_alternative_fng(dest_filename):
+    url = "https://api.alternative.me/fng/?limit=0&format=json"
+    r = requests.get(url)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_vix_yahoo(dest_filename):
+    # ^VIX daily history via Yahoo
+    url = "https://query1.finance.yahoo.com/v7/finance/download/%5EVIX?period1=0&period2=9999999999&interval=1d&events=history"
+    r = requests.get(url)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_deribit_book_summary(currency, dest_filename):
+    url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}"
+    r = requests.get(url)
+    open(dest_filename, "wb").write(r.content)
+
+def fetch_yahoo_options(ticker, dest_filename, max_exps=5):
+    t = yf.Ticker(ticker)
+    exps = t.options
+    rows = []
+    for e in exps[:max_exps]:
+        chain = t.option_chain(e)
+        c = chain.calls.copy()
+        c["expiration"] = e
+        rows.append(c[["contractSymbol","expiration","strike","lastPrice","impliedVolatility"]])
+    if rows:
+        pd.concat(rows).to_csv(dest_filename, index=False)
+    else:
+        open(dest_filename, "w").write("")
+
+def fetch_glassnode(metric, api_key, dest_filename, from_date=None, to_date=None):
+    # Example: https://api.glassnode.com/v1/metrics/market/price_usd_close
+    params = {"api_key": api_key}
+    if from_date: params["a"] = from_date
+    r = requests.get(metric, params=params)
+    open(dest_filename, "wb").write(r.content)
+
+def main():
+    # 1) Rates (FRED)
+    print("Fetching FRED yields...")
+    fetch_fred("DGS10", RAW / "UST_10Y.csv")
+    fetch_fred("DGS2", RAW / "UST_2Y.csv")
+
+    # 2) ECB deposit rate — Trae должен подставить конкретный SDW endpoint в config
+    ECB_SDW_ENDPOINT = "{{ECB_SDW_DEPOSIT_ENDPOINT}}"  # Trae заменит
+    if ECB_SDW_ENDPOINT and ECB_SDW_ENDPOINT.startswith("http"):
+        fetch_ecb_sdw(ECB_SDW_ENDPOINT, RAW / "ECB_deposit.csv")
+
+    # 3) COT (CFTC)
+    print("Fetching COT archive...")
+    fetch_cftc_cot(2024, RAW / "COT_2024.zip")
+    with zipfile.ZipFile(RAW / "COT_2024.zip","r") as z:
+        z.extractall(RAW / "cot_2024")
+
+    # 4) Fear & Greed
+    print("Fetching Fear & Greed index...")
+    fetch_alternative_fng(RAW / "fear_greed.json")
+
+    # 5) VIX
+    print("Fetching VIX (Yahoo)...")
+    fetch_vix_yahoo(RAW / "VIX.csv")
+
+    # 6) Deribit BTC book summary (IV/open interest)
+    print("Fetching Deribit book summary for BTC...")
+    fetch_deribit_book_summary("BTC", RAW / "deribit_book_summary_btc.json")
+
+    # 7) AAPL options snapshot via yfinance
+    print("Fetching AAPL option chains (sample)...")
+    fetch_yahoo_options("AAPL", RAW / "AAPL_options_sample.csv")
+
+    # 8) On-chain / Glassnode — placeholder
+    GLASSNODE_API_KEY = "{{GLASSNODE_API_KEY}}"
+    if GLASSNODE_API_KEY and GLASSNODE_API_KEY != "{{GLASSNODE_API_KEY}}":
+        # пример метрики
+        fetch_glassnode("https://api.glassnode.com/v1/metrics/asset/market/price_usd_close", GLASSNODE_API_KEY, RAW / "glassnode_price_usd.json")
+    else:
+        print("Glassnode API key not provided — skipping on-chain fetch (Glassnode).")
+
+    print("ETL: raw fetch complete. Далее Trae должен запустить preprocess step.")
+
+if __name__ == '__main__':
+    main()
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/preprocess.py
+"""
+Скрипт предобработки: читает /workspace/data/raw/*, нормализует, формирует таймсерии,
+генерирует индикаторы (RSI, MACD, EMA, SMA), объединяет источники и сохраняет
+готовые обучающие CSV в /workspace/data/processed/.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+RAW = Path("/workspace/data/raw")
+PROC = Path("/workspace/data/processed")
+PROC.mkdir(parents=True, exist_ok=True)
+
+def compute_indicators(df, price_col="close"):
+    df = df.copy()
+    # Простые индикаторы (без экстремальной точности) — учебный пример
+    df["ema_12"] = df[price_col].ewm(span=12, adjust=False).mean()
+    df["ema_26"] = df[price_col].ewm(span=26, adjust=False).mean()
+    df["macd"] = df["ema_12"] - df["ema_26"]
+    delta = df[price_col].diff()
+    up = delta.clip(lower=0)
+    down = -1*delta.clip(upper=0)
+    roll_up = up.ewm(com=13, adjust=False).mean()
+    roll_down = down.ewm(com=13, adjust=False).mean()
+    rs = roll_up / roll_down.replace(0, np.nan)
+    df["rsi_14"] = 100 - (100/(1+rs))
+    df = df.fillna(method="bfill").fillna(0)
+    return df
+
+def process_vix():
+    path = RAW / "VIX.csv"
+    if path.exists():
+        df = pd.read_csv(path, parse_dates=["Date"], index_col="Date")
+        df = compute_indicators(df, price_col="Close")
+        df.to_csv(PROC / "VIX_processed.csv")
+
+def process_aapl_options():
+    path = RAW / "AAPL_options_sample.csv"
+    if path.exists():
+        df = pd.read_csv(path)
+        # Приводим impliedVolatility к числовому виду
+        df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
+        df.to_csv(PROC / "AAPL_options_processed.csv", index=False)
+
+def main():
+    process_vix()
+    process_aapl_options()
+    # TODO: добавить обработку COT, FRED, ECB, Deribit, Glassnode и т.д.
+    print("Preprocess done. Processed files in /workspace/data/processed/")
+
+if __name__ == "__main__":
+    main()
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/train_pipeline.py
+"""
+Учебный pipeline обучения и валидации (короткая, модульная версия).
+Задача: показать, как Trae запускает обучение моделей в учебном режиме.
+ПРИМЕЧАНИЕ: модели грузятся как аналитические LLM / backbones — обучение корректируется под CPU/GPU доступность.
+"""
+
+import os
+from pathlib import Path
+import pandas as pd
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
+from sklearn.model_selection import train_test_split
+
+ROOT = Path("/workspace")
+PROC = ROOT / "data" / "processed"
+MODELS_DIR = ROOT / "models"
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Модельные идентификаторы (Trae может заменить на другие, если нужно)
+MODEL_IDS = {
+    "finworld": "{{FINWORLD_MODEL_ID}}",        # если есть HF id или local path
+    "finbloom": "Chaitanya14/FinBloom_7B",
+    "flag_trader": "{{FLAG_TRADER_MODEL_ID}}"
+}
+
+def load_dataset_for_lm(csv_path):
+    # Простой пример: читаем CSV и формируем текстовые пары для LM.
+    # Это демонстрация: для реальной задачи нужно строить специализированные датасеты (таблично/ts/text)
+    df = pd.read_csv(csv_path)
+    # Формируем простой текст: features -> label (учебный формат)
+    texts = []
+    for _, row in df.head(1000).iterrows():  # limit for demo
+        txt = " | ".join([f"{c}:{row[c]}" for c in df.columns if pd.notnull(row[c])])
+        texts.append(txt)
+    return texts
+
+def train_lm(model_id, train_texts, output_dir):
+    print(f"Training {model_id} -> {output_dir}")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", torch_dtype=torch.float16)
+
+    # Simple dataset wrapper
+    class TxtDataset(torch.utils.data.Dataset):
+        def __init__(self, texts, tokenizer):
+            self.examples = tokenizer(texts, truncation=True, padding="max_length", max_length=256)["input_ids"]
+        def __len__(self): return len(self.examples)
+        def __getitem__(self, i): return torch.tensor(self.examples[i])
+
+    train_ds = TxtDataset(train_texts, tokenizer)
+
+    training_args = TrainingArguments(
+        output_dir=str(output_dir),
+        per_device_train_batch_size=1,
+        num_train_epochs=1,
+        logging_steps=10,
+        save_strategy="no",
+        fp16=True,
+    )
+
+    trainer = Trainer(model=model, args=training_args, train_dataset=train_ds)
+    trainer.train()
+    trainer.save_model(output_dir)
+    print(f"{model_id} saved to {output_dir}")
+
+def evaluate_model(model_dir, eval_texts):
+    # Placeholder evaluation: загрузить модель и посчитать loss на eval_texts
+    print("Evaluation placeholder for", model_dir)
+    return {"eval_loss": 0.0}
+
+def main():
+    # Собрать список подготовленных CSV
+    csvs = list(PROC.glob("*.csv"))
+    if not csvs:
+        print("No processed CSVs found. Run preprocess.py first.")
+        return
+
+    # Для демо берем первый CSV и строим тексты
+    train_texts = load_dataset_for_lm(csvs[0])
+    # грубый split
+    train, val = train_texts[: int(len(train_texts)*0.8)], train_texts[int(len(train_texts)*0.8):]
+
+    # Обучаем каждый backbone из MODEL_IDS (если id пуст — пропускаем)
+    for name, mid in MODEL_IDS.items():
+        if not mid or mid.startswith("{{"):
+            print(f"Model id for {name} not provided, skipping.")
+            continue
+        outdir = MODELS_DIR / name
+        outdir.mkdir(exist_ok=True)
+        try:
+            train_lm(mid, train, outdir)
+            metrics = evaluate_model(outdir, val)
+            # сохраняем метрики
+            pd.DataFrame([metrics]).to_csv(outdir / "metrics.csv", index=False)
+        except Exception as e:
+            print(f"Training {name} failed:", str(e))
+
+if __name__ == "__main__":
+    main()
+"""
+
+@file.create path=/workspace/educational_ai_finance_project/tests/run_tests.sh
+"""
+#!/bin/bash
+# Набор быстрых тестов, которые Trae может запустить после сборки
+set -e
+python -c "import pandas as pd; print('pandas ok', pd.__version__)"
+python etl.py
+python preprocess.py
+python train_pipeline.py
+echo "All steps executed (educational mode)."
+"""
+
+# -------------------------
+# 2) Главный Trae-pipeline (создать задачу / pipeline)
+# -------------------------
+
+@task.create
+name: educational_finance_pipeline
+goal: "Скачать источники, сделать ETL, предобработку, обучить модели в учебном режиме и сохранить артефакты"
+steps:
+- run: |
+    # 1. Установить зависимости
+    cd /workspace/educational_ai_finance_project
+    pip install -r requirements.txt
+
+- run: |
+    # 2. Создать директории
+    mkdir -p /workspace/data/raw /workspace/data/processed /workspace/models
+
+- run: |
+    # 3. Выполнить ETL (Trae должен заменить API_KEY placeholders в env vars)
+    export TRADINGECONOMICS_KEY="{{TRADINGECONOMICS_KEY}}"
+    export GLASSNODE_API_KEY="{{GLASSNODE_API_KEY}}"
+    export COINMETRICS_API_KEY="{{COINMETRICS_API_KEY}}"
+    export DERIBIT_API_KEY="{{DERIBIT_API_KEY}}"
+    export DERIBIT_API_SECRET="{{DERIBIT_API_SECRET}}"
+    python /workspace/educational_ai_finance_project/etl.py
+
+- run: |
+    # 4. Предобработка
+    python /workspace/educational_ai_finance_project/preprocess.py
+
+- run: |
+    # 5. Тренировка / валидация (educational: small epochs, demo dataset)
+    python /workspace/educational_ai_finance_project/train_pipeline.py
+
+- run: |
+    # 6. Запуск тестов
+    bash /workspace/educational_ai_finance_project/tests/run_tests.sh
+
+# -------------------------
+# 3) Инструкции / описания для Trae (обязательно)
+# -------------------------
+@task.create
+name: instructions_and_warnings
+goal: "Инструкции: что Trae обязан и не обязан делать"
+notes: |
+  
+  2) Все ключи (API keys) Trae должен подставлять через безопасные переменные окружения, не хардкодить в репозитории.
+  3) Для минутных/почасовых таймсерий Trae должен запросить у пользователя доступ к платным провайдерам (Polygon.io, Barchart, TickData) и использовать их только если есть соответствующий ключ.
+  4) Для опционов (исторический IV surface) Trae должен использовать официальные провайдеры (CBOE, OptionMetrics) — если нет доступа, сделать best-effort snapshot через yfinance и пометить как "неполноценный источник".
+  5) Trae должен логировать все шаги (stdout/stderr) и сохранять логи в /workspace/logs/.
+  6) После тренировки Trae сохраняет модели в /workspace/models/ и складывает отчет /workspace/models/report.txt с метриками и кратким описанием (какие данные использовались, какие метрики получены, warnings).
+  7) Если на каком-то шаге возникла ошибка (например, модель не скачалась), Trae продолжает следующие шаги, помечая ошибку в /workspace/logs/errors.log, и в конце собирает summary.
+
+# -------------------------
+# 4) Конец промпта
+# -------------------------
+"""
+

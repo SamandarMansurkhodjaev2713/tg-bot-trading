@@ -1,0 +1,15 @@
+{
+  "cfg": {
+    "prob_thr": 0.65,
+    "exp_thr": 0.0001,
+    "tp_mult": 2.5,
+    "sl_mult": 0.8,
+    "step": 1
+  },
+  "metrics": {
+    "total_trades": 29,
+    "win_rate": 0.034482758620689655,
+    "profit_factor": 2.048925303575544,
+    "total_return": -0.24313018497258634
+  }
+}

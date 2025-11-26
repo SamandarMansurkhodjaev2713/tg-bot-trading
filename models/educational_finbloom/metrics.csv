@@ -1,0 +1,2 @@
+status,method,vocab_size,tokens,perplexity
+ok,unigram,632,2682,36.5828696348745

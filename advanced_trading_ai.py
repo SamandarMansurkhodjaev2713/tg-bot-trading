@@ -173,7 +173,9 @@ class AdvancedTradingAI:
 
     def predict_enhanced(self, quotes: List[Dict], pair: str) -> Dict[str, Any]:
         f = self.extract_multi_timeframe_features(quotes, pair)
-        s, p, c = self.predict(f, use_calibration=False)
+        s, p, c = self.predict(f, use_calibration=True)
+        if p < 0.6:
+            s = 0
         vol = float(np.std(pd.Series([q['close'] for q in quotes]).pct_change().dropna().tail(50))) if len(quotes) > 50 else 0.0
         return {'direction': 'up' if s == 1 else 'down' if s == -1 else 'flat', 'probability': p, 'confidence': c, 'volatility': vol}
 
@@ -292,8 +294,10 @@ class AdvancedTradingAI:
         for i in range(120, len(quotes)-1):
             window = quotes[:i+1]
             f = self.extract_multi_timeframe_features(window, pair)
-            feats.append(f)
             ch = float(closes.pct_change().iloc[i+1])
+            if abs(ch) <= 0.0002:
+                continue
+            feats.append(f)
             labs.append(1 if ch > 0 else 0)
             ts.append(times[i])
         splits = self.split_by_date(feats, labs, ts)

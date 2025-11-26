@@ -465,8 +465,11 @@ class HistDataLocalSource(DataSource):
         self.base_path = base_path
     async def get_historical_data(self, pair: str, timeframe: str, limit: int = 100) -> List[Dict]:
         try:
-            fname = os.path.join(self.base_path, f"{pair}_{timeframe}.csv")
-            if not os.path.exists(fname):
+            fname1 = os.path.join(self.base_path, f"{pair}_{timeframe}.csv")
+            alt = pair.replace('/', '')
+            fname2 = os.path.join(self.base_path, f"{alt}_{timeframe}.csv")
+            fname = fname1 if os.path.exists(fname1) else fname2 if os.path.exists(fname2) else None
+            if not fname:
                 return []
             df = pd.read_csv(fname)
             cols = { 'Timestamp':'timestamp','Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume' }
@@ -1066,7 +1069,7 @@ class CustomCSVSource(DataSource):
                      'open':'open','high':'high','low':'low','close':'close','volume':'volume' }
             df = df.rename(columns=cols)
             if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce', dayfirst=True)
             df = df.dropna()
             df = df.sort_values('timestamp')
             if limit and len(df) > limit:
