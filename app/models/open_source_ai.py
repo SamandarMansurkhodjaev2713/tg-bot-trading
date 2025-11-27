@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from typing import Dict, Any, List
 from ..features.indicators import compute_features
-from data_sources import DataManager
+from tools.data_sources import DataManager
 from ..services.quotes import get_ohlc
 from ..utils.env import load_env
 
@@ -64,11 +64,6 @@ def _synthetic_df(limit: int, tf: str) -> pd.DataFrame:
     low = np.minimum(openp, close) * (1 - np.random.uniform(0, 0.002, size=len(idx)))
     vol = np.random.randint(500, 1500, size=len(idx))
     return pd.DataFrame({"open": openp, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
-    df = pd.DataFrame(data)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df = df.sort_values('timestamp')
-    df = df.set_index('timestamp')
-    return df
 
 async def train_pairs(pairs: List[str], tf: str) -> Dict[str, Any]:
     res = []
@@ -108,8 +103,28 @@ async def predict_pair(pair: str, tf: str) -> Dict[str, Any]:
     last = X.iloc[-1:]
     clf = m["clf"] if m else Pipeline([("scaler", StandardScaler()), ("model", RandomForestClassifier(n_estimators=200, random_state=42))]).fit(X, y)
     pred = int(clf.predict(last)[0])
+    try:
+        proba = float(max(clf.predict_proba(last)[0]))
+    except Exception:
+        proba = 0.5
     atr = float(feats["atr_14"].iloc[-1]) if "atr_14" in feats.columns else float(np.std(df["close"].pct_change().tail(14)))
     px = float(df["close"].iloc[-1])
     sl = px - atr * 1.5 if pred == 1 else px + atr * 1.5
     tp = px + atr * 2.0 if pred == 1 else px - atr * 2.0
-    return {"pair": pair, "tf": tf, "action": "buy" if pred==1 else "sell" if pred==-1 else "hold", "sl": sl, "tp": tp, "rsi": float(feats.get("rsi_14", pd.Series([50])).iloc[-1]), "adx": float(feats.get("adx_14", pd.Series([20])).iloc[-1])}
+    vol = float(np.std(df["close"].pct_change().dropna().tail(50))) if len(df) > 50 else 0.0
+    macd = float(feats.get("macd", pd.Series([0])).iloc[-1])
+    macd_sig = float(feats.get("macd_signal", pd.Series([0])).iloc[-1])
+    macd_bull = macd >= macd_sig
+    return {
+        "pair": pair,
+        "tf": tf,
+        "action": "buy" if pred==1 else "sell" if pred==-1 else "hold",
+        "sl": sl,
+        "tp": tp,
+        "rsi": float(feats.get("rsi_14", pd.Series([50])).iloc[-1]),
+        "adx": float(feats.get("adx_14", pd.Series([20])).iloc[-1]),
+        "price": px,
+        "vol": vol,
+        "macd_bull": macd_bull,
+        "probability": proba
+    }

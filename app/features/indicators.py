@@ -17,6 +17,14 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     s["cci_20"] = ta.trend.cci(s["high"], s["low"], s["close"], 20)
     s["roc_10"] = ta.momentum.roc(s["close"], 10)
     s["trix_15"] = ta.trend.trix(s["close"], 15)
+    try:
+        s["macd"] = ta.trend.macd(s["close"])
+        s["macd_signal"] = ta.trend.macd_signal(s["close"])
+        s["macd_diff"] = ta.trend.macd_diff(s["close"])
+    except Exception:
+        s["macd"] = s["close"].ewm(span=12).mean() - s["close"].ewm(span=26).mean()
+        s["macd_signal"] = s["macd"].ewm(span=9).mean()
+        s["macd_diff"] = s["macd"] - s["macd_signal"]
     bb = ta.volatility.BollingerBands(s["close"], 20, 2)
     s["bb_mavg"] = bb.bollinger_mavg()
     s["bb_h"] = bb.bollinger_hband()

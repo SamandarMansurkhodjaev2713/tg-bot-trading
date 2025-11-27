@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: tgtrading-api
+    environment:
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HISTDATA_PATH=/app/data/histdata
+      - TRUEFX_PATH=/app/data/truefx
+    volumes:
+      - ../:/app
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bot
+    container_name: tgtrading-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+    volumes:
+      - ../:/app
+    restart: unless-stopped

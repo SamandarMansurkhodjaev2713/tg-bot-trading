@@ -1,20 +1,16 @@
 from fastapi import APIRouter, Query
-from typing import Optional
 from ..services.quotes import get_ohlc
-from data_sources import DataManager
-from . import routes
+from tools.data_sources import DataManager
 from ..features.indicators import compute_features
-from ..models.training import analyze_signal, train_models
-from ..backtest.backtester import run_backtest
-from ..services.news import news_summary
-from ..models.open_source_ai import train_pairs, predict_pair
+from ..models.training import analyze_signal
+from ..models.open_source_ai import predict_pair
 import os
-import requests
+import aiohttp
 
 router = APIRouter()
 
 @router.get("/analyze")
-def analyze(pair: str, tf: str = Query("15m"), window: int = Query(500)):
+async def analyze(pair: str, tf: str = Query("15m"), window: int = Query(500)):
     try:
         df = get_ohlc(pair, tf, window)
     except Exception:
@@ -23,8 +19,7 @@ def analyze(pair: str, tf: str = Query("15m"), window: int = Query(500)):
         dm = DataManager({})
         import pandas as pd
         import numpy as np
-        import asyncio
-        data = asyncio.run(dm.get_merged_market_data(pair, tf, window))
+        data = await dm.get_merged_market_data(pair, tf, window)
         if data:
             d = pd.DataFrame(data)
             d['timestamp'] = pd.to_datetime(d['timestamp'])
@@ -42,36 +37,34 @@ def analyze(pair: str, tf: str = Query("15m"), window: int = Query(500)):
             df = pd.DataFrame({"open": openp, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
     feats = compute_features(df)
     rec = analyze_signal(pair, tf, df, feats)
+    try:
+        price = float(df["close"].iloc[-1])
+    except Exception:
+        price = float(rec.get("price", 0.0))
+    try:
+        steps_map = {"1m": 1440, "5m": 288, "15m": 96, "30m": 48, "1h": 24, "4h": 6, "1d": 1}
+        k = steps_map.get(tf, 24)
+        prev = float(df["close"].iloc[-min(len(df)-1, k)])
+        change_24h = float((price / prev - 1.0) * 100.0)
+    except Exception:
+        change_24h = 0.0
+    rec.update({"price": price, "change_24h": change_24h})
     return rec
 
-@router.post("/train")
-def train(pairs: Optional[list[str]] = None, tf: str = Query("15m")):
-    res = train_models(pairs or ["XAU/USD","EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","NZD/USD","USD/CAD"], tf)
-    return res
-
-@router.get("/backtest")
-def backtest(pair: str, tf: str, start: str, end: str):
-    report = run_backtest(pair, tf, start, end)
-    return report
-
-@router.get("/news")
-def news(pair: str, hours: int = Query(24)):
-    return news_summary(pair, hours)
-
-@router.post("/ai/train")
-async def ai_train(pairs: Optional[list[str]] = None, tf: str = Query("15m")):
-    return await train_pairs(pairs or ["XAU/USD","EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","NZD/USD","USD/CAD"], tf)
 
 @router.get("/ai/predict")
 async def ai_predict(pair: str, tf: str = Query("15m")):
     return await predict_pair(pair, tf)
 
 @router.post("/ai/chat")
-def ai_chat(pair: str, tf: str, question: str = ""):
-    from ..models.open_source_ai import predict_pair
-    import asyncio
-    pred = asyncio.run(predict_pair(pair, tf))
-    prompt = f"Пара: {pair} TF: {tf}. Сигнал: {pred.get('action','hold')}. RSI: {pred.get('rsi',50):.1f}. ADX: {pred.get('adx',20):.1f}. SL: {pred.get('sl','-')}. TP: {pred.get('tp','-')}. Вопрос: {question}. Дай краткий профессиональный ответ с управлением риском и планом сделки."
+async def ai_chat(pair: str, tf: str, question: str = ""):
+    pred = await predict_pair(pair, tf)
+    prompt = (
+        f"Пара: {pair} TF: {tf}. Сигнал: {pred.get('action','hold')}. "
+        f"RSI: {pred.get('rsi',50):.1f}. ADX: {pred.get('adx',20):.1f}. "
+        f"SL: {pred.get('sl','-')}. TP: {pred.get('tp','-')}. "
+        f"Вопрос: {question}. Дай краткий профессиональный ответ с управлением риском и планом сделки."
+    )
     key = os.getenv('OPENROUTER_API_KEY', '')
     if key:
         try:
@@ -81,8 +74,9 @@ def ai_chat(pair: str, tf: str, question: str = ""):
                 'messages': [ { 'role': 'user', 'content': prompt } ],
                 'max_tokens': 300
             }
-            resp = requests.post('https://api.openrouter.ai/v1/chat/completions', json=body, headers=headers, timeout=20)
-            js = resp.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.post('https://api.openrouter.ai/v1/chat/completions', json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    js = await resp.json()
             txt = js.get('choices',[{}])[0].get('message',{}).get('content','') or ''
             return { 'pair': pair, 'tf': tf, 'answer': txt, 'signal': pred }
         except Exception:

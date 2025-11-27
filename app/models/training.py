@@ -32,10 +32,38 @@ def analyze_signal(pair: str, tf: str, df: pd.DataFrame, feats: pd.DataFrame):
         best = clf
     last = X.iloc[-1:]
     pred = int(best.predict(last)[0])
+    try:
+        proba = float(max(best.predict_proba(last)[0]))
+    except Exception:
+        proba = 0.5
     size = position_size(pair, tf, feats)
-    sl = float(df["close"].iloc[-1] - feats["atr_14"].iloc[-1] * 1.5) if pred == 1 else float(df["close"].iloc[-1] + feats["atr_14"].iloc[-1] * 1.5)
-    tp = float(df["close"].iloc[-1] + feats["atr_14"].iloc[-1] * 2.0) if pred == 1 else float(df["close"].iloc[-1] - feats["atr_14"].iloc[-1] * 2.0)
-    return {"pair": pair, "tf": tf, "action": "buy" if pred==1 else "sell" if pred==-1 else "hold", "size": size, "sl": sl, "tp": tp, "explanation": {"indicators": {"rsi": float(feats["rsi_14"].iloc[-1]), "adx": float(feats["adx_14"].iloc[-1])}}}
+    price = float(df["close"].iloc[-1])
+    atr = float(feats["atr_14"].iloc[-1]) if "atr_14" in feats.columns else float(np.std(df["close"].pct_change().tail(14)))
+    sl = float(price - atr * 1.5) if pred == 1 else float(price + atr * 1.5)
+    tp = float(price + atr * 2.0) if pred == 1 else float(price - atr * 2.0)
+    macd_bull = False
+    try:
+        macd_bull = bool(feats["macd"].iloc[-1] >= feats["macd_signal"].iloc[-1])
+    except Exception:
+        macd_bull = False
+    try:
+        bb_pos = float(feats["bb_perc"].iloc[-1] * 100)
+    except Exception:
+        bb_pos = 0.0
+    return {
+        "pair": pair,
+        "tf": tf,
+        "action": "buy" if pred==1 else "sell" if pred==-1 else "hold",
+        "size": size,
+        "sl": sl,
+        "tp": tp,
+        "price": price,
+        "atr": atr,
+        "macd_bull": macd_bull,
+        "bb_pos": bb_pos,
+        "probability": proba,
+        "explanation": {"indicators": {"rsi": float(feats["rsi_14"].iloc[-1]), "adx": float(feats["adx_14"].iloc[-1])}}
+    }
 
 def train_models(pairs: list[str], tf: str):
     reports = []

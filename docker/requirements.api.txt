@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+scikit-learn
+joblib
+requests
+python-dotenv
+aiohttp
+yfinance
+feedparser
+python-binance
+websocket-client
+ta

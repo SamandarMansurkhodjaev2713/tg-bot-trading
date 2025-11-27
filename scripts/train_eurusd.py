@@ -8,7 +8,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from advanced_trading_ai import AdvancedTradingAI
+from bots.advanced_ai.predict import AdvancedTradingAI
 
 def main():
     ai = AdvancedTradingAI()
