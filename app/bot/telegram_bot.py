@@ -31,6 +31,47 @@ def _explain_indicators(rsi: float, adx: float) -> str:
         tips.append("RSI нейтральный — ориентир по уровню и структуре")
     return "\n".join([f"• {t}" for t in tips])
 
+def _format_unified(res: dict) -> str:
+    pair = res.get('pair','XAU/USD')
+    tf = res.get('tf','15m')
+    news = res.get('news',{})
+    hist = res.get('history',{})
+    sent = res.get('sentiment',{})
+    fg = res.get('fear_greed',{})
+    inst = res.get('institutional',{})
+    ind = res.get('indicators',{})
+    final = res.get('final',{})
+    dir_txt = "BUY" if final.get('direction') == 'buy' else "SELL" if final.get('direction') == 'sell' else "NONE"
+    lines = []
+    lines.append(f"📌 {pair} {tf}")
+    lines.append("1. Новости")
+    lines.append(f" • Итог: {news.get('summary','')}\n • Влияние на XAUUSD: {news.get('influence','')}")
+    lines.append("2. Исторические данные")
+    lines.append(f" • Тренд: {hist.get('trend','')}\n • ATR: {hist.get('volatility_atr',0):.5f}\n • Уровни: L {hist.get('levels',{}).get('piv_low','-')} | H {hist.get('levels',{}).get('piv_high','-')}")
+    lines.append("3. Сентимент рынка")
+    lines.append(f" • Режим: {sent.get('risk_mode','')}\n • SP500 Δ: {sent.get('sp500_change',0.0):+.2%}\n • DXY Δ: {sent.get('dxy_change',0.0):+.2%}")
+    lines.append("4. Индекс страха/жадности")
+    lines.append(f" • Значение: {fg.get('value','n/a')}")
+    lines.append("5. Сделки крупных игроков")
+    cot = inst.get('cot')
+    if cot:
+        mm_net = float(cot.get('mm_net', 0) or 0)
+        interp = "бычий" if mm_net > 0 else "медвежий" if mm_net < 0 else "нейтральный"
+        lines.append(f" • COT GOLD: MM net {mm_net:+.0f} ({interp}) | дата {cot.get('report_date','')}")
+    else:
+        lines.append(" • Данные: n/a")
+    lines.append("6. Индикаторы")
+    lines.append(f" • EMA20: {ind.get('ema20','-'):.5f} | EMA50: {ind.get('ema50','-'):.5f}\n • RSI(14): {ind.get('rsi',50):.1f}\n • ADX(14): {ind.get('adx',20):.1f}\n • MACD: {'бычий' if ind.get('macd_bull', False) else 'медвежий'}")
+    lines.append("7. Общий итог")
+    lines.append(f" • Совпадение факторов: {res.get('final',{}).get('confidence',0.0):.2f}\n • Вывод: {dir_txt}")
+    lines.append("8. Стоп-лосс (объяснение)")
+    lines.append(f" • {final.get('sl','-')} — {final.get('sl_reason','')}")
+    lines.append("9. Тейк-профит (объяснение)")
+    lines.append(f" • {final.get('tp','-')} — {final.get('tp_reason','')}")
+    lines.append("10. Финальный сигнал")
+    lines.append(f" • {dir_txt}")
+    return "\n".join(lines)
+
 router = Router()
 PAIRS = ["XAU/USD","EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","NZD/USD","USD/CAD"]
 TF_ALLOWED = {"1m","5m","15m","30m","1h","4h","1d"}
@@ -96,38 +137,7 @@ async def cmd_analyze(message: Message):
             else:
                 await message.answer("ошибка API")
                 return
-    act = d.get("action","hold")
-    size = d.get("size","-")
-    sl = float(d.get("sl", 0.0))
-    tp = float(d.get("tp", 0.0))
-    price = float(d.get("price", 0.0))
-    change_24h = float(d.get("change_24h", 0.0))
-    inds = d.get("explanation",{}).get("indicators",{})
-    rsi = float(inds.get("rsi", 50))
-    macd_bull = bool(d.get("macd_bull", False))
-    bb_pos = float(d.get("bb_pos", 0.0))
-    prob = float(d.get("probability", 0.5))
-    atr = float(d.get("atr", 0.0))
-    pair_disp = pair.replace("/", "")
-    dir_text = "📈 ПОКУПКА" if act == "buy" else "📉 ПРОДАЖА" if act == "sell" else "⚪ ДЕРЖАТЬ"
-    macd_text = "🟢" if macd_bull else "🔴"
-    msg = (
-        f"📈 Анализ {pair_disp} {tf}\n\n"
-        f"💰 Текущая цена: {price:.5f}\n"
-        f"📊 Изменение за 24ч: {change_24h:+.2f}%\n\n"
-        f"🔍 Технические индикаторы:\n"
-        f" • RSI (14): {rsi:.1f} ⚪\n"
-        f" • MACD: {macd_text}\n"
-        f" • BB Position: {bb_pos:.1f}%\n\n"
-        f"🤖 ML Сигнал:\n"
-        f" • Рекомендация: {dir_text}\n"
-        f" • Уверенность: {prob*100:.1f}%\n\n"
-        f"⚠️ Риск-менеджмент:\n"
-        f" • ATR: {atr:.5f}\n"
-        f" • Рекомендуемый SL: {sl:.5f}\n"
-        f" • Рекомендуемый TP: {tp:.5f}\n\n"
-    )
-    await message.answer(msg)
+    await message.answer(_format_unified(d))
 
 @router.message(Command("aitrader"))
 async def cmd_aitrader(message: Message, state: FSMContext):
@@ -145,19 +155,7 @@ async def cmd_aitrader(message: Message, state: FSMContext):
             else:
                 await message.answer("ошибка API")
                 return
-    act = d.get('action','hold')
-    sl = d.get('sl','-')
-    tp = d.get('tp','-')
-    rsi = float(d.get('rsi',50))
-    adx = float(d.get('adx',20))
-    msg = []
-    msg.append(f"🤖 {pair} {tf}")
-    msg.append(f"Сигнал: {_map_action(act)}")
-    msg.append(f"Уровни: SL {sl} | TP {tp}")
-    msg.append(f"Индикаторы: RSI {rsi:.1f} | ADX {adx:.1f}")
-    msg.append(_explain_indicators(rsi, adx))
-    msg.append("Риск: ≤1% на сделку, размер позиции адаптируйте к ATR")
-    await message.answer("\n".join(msg))
+    await message.answer(_format_unified(d))
     await message.answer("Напишите вопрос по сделке или рынку — отвечу как трейдер.")
     await state.update_data(ait_pair=pair, ait_tf=tf)
     await state.set_state(AITChat.chat)
@@ -201,70 +199,7 @@ async def cmd_chatai(message: Message, state: FSMContext):
             else:
                 await message.answer("ошибка API")
                 return
-    act = direction or pred.get("action","hold")
-    px = float(pred.get("price", 0.0))
-    sl = float(pred.get("sl", 0.0))
-    tp = float(pred.get("tp", 0.0))
-    rsi = float(pred.get("rsi", 50.0))
-    adx = float(pred.get("adx", 20.0))
-    vol = float(pred.get("vol", 0.0))
-    prob = float(pred.get("probability", 0.5))
-    macd_bull = bool(pred.get("macd_bull", False))
-    pair_disp = pair.replace("/", "")
-    rr = (abs(tp - px) / max(1e-9, abs(px - sl))) if px and sl and tp else 0.0
-    risk_pct = (abs(px - sl) / px) * 100 if px and sl else 0.0
-    vol_level = "low" if vol < 0.005 else "moderate" if vol < 0.015 else "high"
-    dir_text = "📈 ЛОНГ" if act == "buy" else "📉 ШОРТ" if act == "sell" else "⏸ НАБЛЮДАТЬ"
-    trend_text = "🟢 Восходящий" if adx >= 25 and act == "buy" else "🔴 Нисходящий" if adx >= 25 and act == "sell" else "⚪ Слабый/боковой"
-    macd_text = "🟢 Бычий" if macd_bull else "🔴 Медвежий"
-    vol_text = "🟢 Низкая" if vol_level == "low" else "🟡 Умеренная" if vol_level == "moderate" else "🔴 Высокая"
-    quality = 7
-    if rr >= 1.5:
-        quality += 2
-    if adx >= 25:
-        quality += 1
-    quality = min(10, quality)
-    ev = max(0.0, (prob - 0.5) * 0.5 * 100)
-    msg = (
-        f"🤖 AI Оценка торгового сигнала\n\n"
-        f"📊 Ваш сигнал:\n"
-        f" • Пара: {pair_disp}\n"
-        f" • Направление: {dir_text}\n"
-        f" • Текущая цена: {px:.5f}\n"
-        f" • Стоп-лосс: {sl:.5f}\n"
-        f" • Тейк-профит: {tp:.5f}\n"
-        f" • Уровень риска: {vol_level}\n\n"
-        f"🎯 Оценка AI:\n"
-        f" 🟢 СИЛЬНЫЙ СИГНАЛ - Рекомендуется к исполнению\n\n" if rr >= 1.5 and adx >= 25 and act != "hold" else f" 🟡 СРЕДНИЙ СИГНАЛ - Требует подтверждения\n\n"
-        f"📈 Рыночные условия:\n"
-        f" • Тренд: {trend_text}\n"
-        f" • RSI: {rsi:.1f} ⚪\n"
-        f" • MACD: {macd_text}\n"
-        f" • Волатильность: {vol_text}\n\n"
-        f"💡 Анализ:\n"
-        f" • ✅ Хорошее соотношение риск/прибыль: {rr:.2f}:1\n"
-        f" • ✅ Приемлемый риск: {risk_pct:.2f}%\n"
-        f" • ✅ Сигнал в направлении тренда\n"
-        f" • ✅ Мультитаймфрейм 15m подтверждает направление\n"
-        f" • ✅ MACD подтверждает импульс\n"
-        f" • ✅ Стоп-лосс учитывает волатильность\n\n"
-        f"📊 Технические детали:\n"
-        f" • Соотношение риск/прибыль: {rr:.2f}:1\n"
-        f" • Риск от депозита: {risk_pct:.2f}%\n"
-        f" • Оценка качества: {quality}/10\n"
-        f" • Ожидаемая доходность (EV): {ev:.2f}%\n\n"
-        f"🔧 Рекомендуемые уровни:\n"
-        f" • SL: {sl:.5f} | TP: {tp:.5f}\n"
-        f" • Обновлённое R:R ≥ 1.5:1\n"
-        f" • Мультитаймфрейм (15m): ✅ Подтвержден\n"
-        f" • Вероятность успеха ML: {prob*100:.1f}% 🔴\n\n"
-        f"⚠️ Важно:\n"
-        f" • Это образовательный анализ, не финансовый совет\n"
-        f" • Всегда используйте дополнительное подтверждение\n"
-        f" • Тестируйте стратегии на демо-счете\n"
-        f" • Управляйте рисками разумно"
-    )
-    await message.answer(msg)
+    await message.answer(_format_unified(pred))
 
 async def run_bot():
     load_env()

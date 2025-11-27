@@ -19,6 +19,13 @@ WHITELIST = {
     "reuters.com",
     "bloomberg.com",
     "ft.com",
+    "forexlive.com",
+    "cnbc.com",
+    "www.cnbc.com",
+    "dailyfx.com",
+    "www.dailyfx.com",
+    "investing.com",
+    "finance.yahoo.com",
 }
 
 PAIR_DOMAINS = {
@@ -26,7 +33,15 @@ PAIR_DOMAINS = {
     "GBP/USD": ["bankofengland.co.uk", "reuters.com"],
     "USD/JPY": ["boj.or.jp", "reuters.com"],
     "USD/CHF": ["snb.ch", "reuters.com"],
-    "XAU/USD": ["reuters.com", "ft.com"],
+    "XAU/USD": [
+        "reuters.com",
+        "ft.com",
+        "forexlive.com",
+        "cnbc.com",
+        "dailyfx.com",
+        "investing.com",
+        "finance.yahoo.com",
+    ],
     "AUD/USD": ["reuters.com"],
     "NZD/USD": ["reuters.com"],
     "USD/CAD": ["reuters.com"],
@@ -60,6 +75,16 @@ def _rss_fetch(domains: list[str], hours: int):
             feeds.append("https://feeds.reuters.com/reuters/businessNews")
         if d == "ft.com":
             feeds.append("https://www.ft.com/?format=rss")
+        if d in ("cnbc.com", "www.cnbc.com"):
+            feeds.append("https://www.cnbc.com/id/100003114/device/rss/rss.html")
+        if d in ("dailyfx.com", "www.dailyfx.com"):
+            feeds.append("https://www.dailyfx.com/feeds/latest")
+        if d == "forexlive.com":
+            feeds.append("https://www.forexlive.com/feed/news")
+        if d == "investing.com":
+            feeds.append("https://www.investing.com/rss/news.rss")
+        if d == "finance.yahoo.com":
+            feeds.append("https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US")
     for f in feeds:
         d = feedparser.parse(f)
         for e in d.entries:

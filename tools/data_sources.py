@@ -222,6 +222,8 @@ class YahooFinanceDataSource(DataSource):
             'US100': '^IXIC',
             'US500': '^GSPC',
             'USTEC': '^IXIC',  # Same as US100
+            'DXY': 'DX-Y.NYB',
+            'VIX': '^VIX',
             'AAPL': 'AAPL',
             'TSLA': 'TSLA'
         }
@@ -786,6 +788,8 @@ class DataManager:
             self.sources['fred'] = FredDataSource(
                 api_key=self.config['fred_api_key']
             )
+        # CFTC COT via Public Reporting API
+        self.sources['cot'] = CotDataSource()
     
     def init_database(self):
         """Initialize database for caching"""
@@ -916,7 +920,15 @@ class DataManager:
                 if t in by_time and q.get('volume', 0) in [None, 0]:
                     q['volume'] = by_time[t].get('volume', 0)
                 merged.append(q)
-            return merged if merged else primary
+            if merged:
+                return merged
+            if primary:
+                return primary
+            if backups:
+                # when primary is empty, use backups sorted by time
+                backups.sort(key=lambda x: x.get('timestamp'))
+                return backups
+            return []
         except Exception as e:
             print(f"Error merging market data: {e}")
             return []
@@ -1011,6 +1023,43 @@ class DataManager:
             
         except Exception as e:
             print(f"Error getting macro indicators: {e}")
+            return {}
+
+    async def get_cot_gold(self) -> Dict[str, Any]:
+        """Get latest Disaggregated COT for GOLD (COMEX) via CFTC Public Reporting API"""
+        try:
+            if 'cot' not in self.sources:
+                return {}
+            src = self.sources['cot']
+            rec = await src.get_disaggregated_latest('GOLD')
+            if not rec:
+                # fallback by commodity code for Gold (088691)
+                rec = await src.get_disaggregated_latest_by_code('088691')
+            if not rec:
+                return {}
+            mm_long = float(rec.get('managed_money_long_all', rec.get('managed_money_long', 0) or 0))
+            mm_short = float(rec.get('managed_money_short_all', rec.get('managed_money_short', 0) or 0))
+            mm_spread = float(rec.get('managed_money_spread_all', rec.get('managed_money_spreading', 0) or 0))
+            swap_long = float(rec.get('swap_positions_long_all', rec.get('swap_positions_long', 0) or 0))
+            swap_short = float(rec.get('swap__positions_short_all', rec.get('swap_positions_short', 0) or 0))
+            pm_long = float(rec.get('prod_merc_positions_long_all', rec.get('prod_merc_positions_long', 0) or 0))
+            pm_short = float(rec.get('prod_merc_positions_short_all', rec.get('prod_merc_positions_short', 0) or 0))
+            date = rec.get('report_date_as_yyyy_mm_dd') or rec.get('report_date') or ''
+            return {
+                'report_date': date,
+                'mm_net': mm_long - mm_short,
+                'mm_long': mm_long,
+                'mm_short': mm_short,
+                'mm_spread': mm_spread,
+                'swap_net': swap_long - swap_short,
+                'swap_long': swap_long,
+                'swap_short': swap_short,
+                'prod_merc_net': pm_long - pm_short,
+                'prod_merc_long': pm_long,
+                'prod_merc_short': pm_short,
+            }
+        except Exception as e:
+            print(f"Error getting COT GOLD: {e}")
             return {}
     
     async def start_realtime_stream(self, pair: str, timeframe: str, callback: Callable):
@@ -1135,3 +1184,41 @@ class ExternalCSVSource(DataSource):
         return
     async def stop_realtime_stream(self):
         return
+
+class CotDataSource:
+    """CFTC Public Reporting API for Disaggregated Futures Only"""
+    def __init__(self):
+        self.base_json = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json'
+        self.session = requests.Session()
+    async def get_disaggregated_latest(self, commodity: str) -> Dict[str, Any]:
+        try:
+            params = {
+                '$select': '*',
+                '$order': 'report_date_as_yyyy_mm_dd DESC',
+                '$limit': 1,
+                'commodity_name': commodity
+            }
+            r = self.session.get(self.base_json, params=params, timeout=15)
+            if r.status_code != 200:
+                return {}
+            data = r.json()
+            return data[0] if data else {}
+        except Exception as e:
+            print(f"Error fetching COT (commodity={commodity}): {e}")
+            return {}
+    async def get_disaggregated_latest_by_code(self, code: str) -> Dict[str, Any]:
+        try:
+            params = {
+                '$select': '*',
+                '$order': 'report_date_as_yyyy_mm_dd DESC',
+                '$limit': 1,
+                'cftc_commodity_code': code
+            }
+            r = self.session.get(self.base_json, params=params, timeout=15)
+            if r.status_code != 200:
+                return {}
+            data = r.json()
+            return data[0] if data else {}
+        except Exception as e:
+            print(f"Error fetching COT (code={code}): {e}")
+            return {}
