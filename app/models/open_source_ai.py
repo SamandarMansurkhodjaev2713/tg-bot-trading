@@ -34,6 +34,13 @@ async def _get_df_multi(pair: str, tf: str, limit: int) -> pd.DataFrame:
         'histdata_path': os.getenv('HISTDATA_PATH', 'data/histdata'),
         'truefx_path': os.getenv('TRUEFX_PATH', 'data/truefx')
     }
+    try:
+        from ..services import mt5 as mt5svc
+        df_mt5 = mt5svc.get_df(pair, tf, limit)
+        if isinstance(df_mt5, pd.DataFrame) and len(df_mt5) > 0:
+            return df_mt5
+    except Exception:
+        pass
     dm = DataManager(cfg)
     data = await dm.get_merged_market_data(pair, tf, limit)
     if not data:
